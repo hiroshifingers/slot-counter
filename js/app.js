@@ -280,7 +280,14 @@
     if (p.hit_extra_fields) p.hit_extra_fields = p.hit_extra_fields.filter(f => !(f.key === 'diff' || f.label === '差枚'));
     if (!p.hit_triggers) p.hit_triggers = []; // 大当たり契機（旧プロファイル互換）
     if (!p.totalGMode) p.totalGMode = 'manual'; // 総Gカウント方法（manual|auto）
+    if (!p.type_meta || typeof p.type_meta !== 'object') p.type_meta = {}; // 大当たり種別ごとの表示/％母数設定
     return p;
+  }
+  // 大当たり種別ごとの設定（履歴カードの表示ON/OFF・％の母数計算式）。既定：表示ON・母数=実践G
+  function typeMeta(prof, t) { return (prof.type_meta && prof.type_meta[t]) || {}; }
+  function typeDenomTokens(prof, t) {
+    const m = typeMeta(prof, t);
+    return (m.denomTokens && m.denomTokens.length) ? m.denomTokens : [{ var: 'played_g' }];
   }
 
   /* ---------- セッション ---------- */
@@ -479,6 +486,7 @@
         <input id="invest-k" inputmode="decimal" value="${invest ? invest / 1000 : ''}" placeholder="0" />
         <span class="ir-unit">k</span>
         <button class="btn" id="invest-plus">＋1k</button>
+        <button class="btn" id="invest-plus-m">＋1万</button>
         <span class="ir-yen" id="invest-yen">${yen(invest)}円</span>
       </div>
       <button class="btn primary block" id="add-hit" style="margin:12px 0">＋ 履歴登録</button>
@@ -495,20 +503,26 @@
     `;
   }
 
-  // RB率/BB率/ART率…（機種の種別ごと）＋ 合算率。分母=実践G。各率の下に回数。
+  // RB率/BB率/ART率…（機種の種別ごと）＋ 合算率。1/Xと％（母数は種別ごとに設定可・既定=実践G）。各率の下に回数。
   function renderRateCards(prof) {
     const s = state.active;
-    const pg = playedG(prof, s);
-    const types = (prof.bonus_types && prof.bonus_types.length) ? prof.bonus_types : [];
-    const cards = types.map(t => {
-      const cnt = s.history.filter(h => h.type === t).length;
-      return { label: t + '率', rate: fmtRate(pg, cnt), cnt };
-    });
-    const total = s.history.length;
-    cards.push({ label: '合算率', rate: fmtRate(pg, total), cnt: total });
+    const ctx = { metrics: prof.metrics || [], stack: new Set(), gmode: prof.totalGMode };
+    // 種別ごとに母数（％用の分母）を計算式で解決し、1/X・％の両方を出す
+    const cardFor = (label, cnt, denToks) => {
+      const denom = Engine.evalFormulaTokens(denToks, s, ctx);
+      const rate = (denom > 0 && cnt > 0) ? '1/' + Math.round(denom / cnt) : '—';
+      const pct = (denom > 0) ? (cnt / denom * 100).toFixed(1) + '%' : '—';
+      return { label, rate, pct, cnt };
+    };
+    // 履歴に表示ONの種別のみ（既定ON）
+    const types = ((prof.bonus_types && prof.bonus_types.length) ? prof.bonus_types : [])
+      .filter(t => typeMeta(prof, t).showRate !== false);
+    const cards = types.map(t => cardFor(t + '率', s.history.filter(h => h.type === t).length, typeDenomTokens(prof, t)));
+    cards.push(cardFor('合算率', s.history.length, [{ var: 'played_g' }]));
     return `<div class="stat-grid">${cards.map(c => `
       <div class="stat"><div class="k">${esc(c.label)}</div>
         <div class="v">${c.rate}</div>
+        <div class="pct">${c.pct}</div>
         <div class="rcnt">${c.cnt}回</div></div>`).join('')}</div>`;
   }
   function refreshRates(prof) {
@@ -585,7 +599,7 @@
         </div>
         <label class="field" style="margin:8px 0 0"><span>日付</span>
           <input id="set-date" type="date" value="${esc(s.date || '')}" /></label>
-        ${state.stores.length ? '' : '<div class="muted small" style="margin-top:6px">店舗マスタが未登録です。「収支 → ⚙店舗マスタ」で登録すると回収計算に使えます。</div>'}
+        ${state.stores.length ? '' : '<div class="muted small" style="margin-top:6px">店舗マスタが未登録です。「設定 → 店舗マスタ」で登録すると回収計算に使えます。</div>'}
       </div>
       <div class="card">
         <h2>回収</h2>
@@ -614,6 +628,7 @@
   function bindContentEvents(prof) {
     const s = state.active;
     // カウンター
+    const buzz = (ms) => { if (navigator.vibrate) { try { navigator.vibrate(ms); } catch (e) {} } };
     document.querySelectorAll('[data-inc]').forEach(el => {
       el.addEventListener('click', (e) => {
         if (e.target.closest('[data-dec]')) return;
@@ -622,6 +637,9 @@
         el.querySelector('.cnt').textContent = s.counts[k];
         const fracEl = el.querySelector('.cnt-frac');
         if (fracEl) fracEl.innerHTML = fmtCounterFrac(prof, k, s.counts[k]);
+        // タップ演出：色が上→下へ流れる（アニメを毎回リスタート）＋ 端末をブルッと振動
+        el.classList.remove('sweeping'); void el.offsetWidth; el.classList.add('sweeping');
+        buzz(18);
         saveActive(); refreshHeaderBest(prof);
       });
     });
@@ -634,6 +652,7 @@
         card.querySelector('.cnt').textContent = s.counts[k];
         const fracEl = card.querySelector('.cnt-frac');
         if (fracEl) fracEl.innerHTML = fmtCounterFrac(prof, k, s.counts[k]);
+        buzz(12);
         saveActive(); refreshHeaderBest(prof);
       });
     });
@@ -643,6 +662,8 @@
     if (ik) ik.oninput = () => { const v = parseFloat(ik.value || '0'); s.invest = Math.max(0, Math.round((isFinite(v) ? v : 0) * 1000)); investYen(); saveActive(); };
     const ip = document.getElementById('invest-plus');
     if (ip) ip.onclick = () => { s.invest = (Number(s.invest) || 0) + 1000; if (ik) ik.value = s.invest / 1000; investYen(); saveActive(); };
+    const ipm = document.getElementById('invest-plus-m');
+    if (ipm) ipm.onclick = () => { s.invest = (Number(s.invest) || 0) + 10000; if (ik) ik.value = s.invest / 1000; investYen(); saveActive(); };
     // 回収額（回収枚数 × 1枚あたり金額。1枚あたり=1000円/交換枚数（店舗マスタ））
     const pm = document.getElementById('payout-medals');
     if (pm) pm.oninput = () => { s.payoutMedals = parseInt(pm.value || '0', 10) || 0; saveActive(); };
@@ -947,7 +968,8 @@
           ${e.bonus_types.length ? e.bonus_types.map((t, i) => `
             <div class="ed-sort-row tap-row" data-edittype="${i}">
               <span class="drag-handle" title="ドラッグで並べ替え">⠿</span>
-              <div class="tr-main"><div class="tr-name">${esc(t) || '(無名)'}</div></div>
+              <div class="tr-main"><div class="tr-name">${esc(t) || '(無名)'}</div>
+                ${typeMeta(e, t).showRate === false ? '<div class="tr-sub">履歴に非表示</div>' : ''}</div>
               <button class="btn ghost small" data-deltype="${i}">✕</button>
             </div>`).join('') : '<div class="muted small">まだありません。「＋追加」から。</div>'}
         </div>
@@ -1141,26 +1163,48 @@
     const e = state.editing;
     const isNew = idx < 0;
     const cur = isNew ? '' : e.bonus_types[idx];
+    e.type_meta = e.type_meta || {};
+    const meta0 = isNew ? {} : (e.type_meta[cur] || {});
+    // 作業用（保存時に確定）：履歴に表示するか・％の母数計算式（既定=実践G）
+    const w = { show: meta0.showRate !== false, denomTokens: (meta0.denomTokens && meta0.denomTokens.length) ? meta0.denomTokens.map(t => ({ ...t })) : [{ var: 'played_g' }] };
     openModal(`
       <h3>${isNew ? '大当たり種別を追加' : '大当たり種別を編集'}</h3>
       <label class="field"><span>種別名（例 BB / RB / ART / AT / CZ）</span>
         <input id="tym-name" value="${esc(cur)}" placeholder="種別名" /></label>
+      <label class="checkline"><input type="checkbox" id="tym-show" ${w.show ? 'checked' : ''} />
+        実践＞履歴に率カードを表示する</label>
+      <div class="field"><span>％の母数＝計算式（既定：実践G）</span>
+        ${fbtn(w.denomTokens, e, 'data-tym-fden', 0)}
+        <div class="muted small" style="margin-top:4px">履歴カードの「％」を出す分母です。空にすると実践Gを使います。</div></div>
       <div class="mfoot">
-        ${isNew ? '' : '<button class="btn danger" id="tym-del">削除</button>'}
         <button class="btn primary" id="tym-save">保存</button>
+        <button class="btn ghost" data-close>キャンセル</button>
+        ${isNew ? '' : '<button class="btn danger" id="tym-del">削除</button>'}
       </div>
     `, (root) => {
       const inp = root.querySelector('#tym-name');
       setTimeout(() => inp.focus(), 60);
+      root.querySelector('[data-tym-fden]').onclick = () =>
+        openFormulaBuilder('％の母数の計算式', w.denomTokens, e, null, (toks) => {
+          w.denomTokens = toks.length ? toks : [{ var: 'played_g' }];
+          updateFbtn(root, 'data-tym-fden', w.denomTokens, e);
+        });
       const save = () => {
         const v = inp.value.trim();
         if (!v) { toast('種別名を入力してください'); return; }
+        w.show = root.querySelector('#tym-show').checked;
+        e.type_meta = e.type_meta || {};
+        // 名前を変えたら旧キーの設定を移動
+        if (!isNew && cur !== v) delete e.type_meta[cur];
+        e.type_meta[v] = { showRate: w.show, denomTokens: w.denomTokens };
         if (isNew) e.bonus_types.push(v); else e.bonus_types[idx] = v;
         closeModal(); renderEditor();
       };
       root.querySelector('#tym-save').onclick = save;
       inp.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') save(); });
-      if (!isNew) root.querySelector('#tym-del').onclick = () => { e.bonus_types.splice(idx, 1); closeModal(); renderEditor(); };
+      if (!isNew) root.querySelector('#tym-del').onclick = () => {
+        delete e.type_meta[cur]; e.bonus_types.splice(idx, 1); closeModal(); renderEditor();
+      };
     });
   }
 
@@ -1584,8 +1628,37 @@
     };
   }
 
-  /* ---------- 保存済み記録：編集モーダル（全項目 閲覧・編集可） ---------- */
+  /* 記録の「設定予測」タブ用：判別エンジンの結果を読み取り専用で表示 */
+  function expectationHtmlRO(prof, sess) {
+    if (!prof || !prof.metrics || !prof.metrics.length)
+      return '<div class="muted small center" style="padding:20px 0">この記録の機種には判別メトリックが設定されていません。<br>「設定」タブの機種マスタで登録できます。</div>';
+    const exp = Engine.totalExpectation(prof.metrics, sess, prof.totalGMode);
+    let head = '';
+    if (exp.anyData && exp.posterior) {
+      head += `<div class="exp-best">最有力 <b>設定${exp.best}</b> <span class="muted small">(${exp.usedCount}項目を統合)</span></div>`;
+      head += '<div class="exp-bars">' + Engine.SETTINGS.map(sv => {
+        const p = exp.posterior[sv]; if (p == null) return '';
+        return `<div class="exp-row"><div class="s">${sv}</div>
+          <div class="exp-track"><div class="exp-fill ${sv === exp.best ? 'best' : ''}" style="width:${p.toFixed(1)}%"></div></div>
+          <div class="p">${p.toFixed(1)}%</div></div>`;
+      }).join('') + '</div>';
+    } else {
+      head += '<div class="muted small">この記録のカウント・回転数では、まだ設定予測は算出できません。</div>';
+    }
+    const metricsHtml = exp.computed.filter(m => m.include !== false).map(m => {
+      const measTxt = !m.active ? '<span class="muted">—</span>'
+        : (m.mode === 'fraction'
+            ? `<span class="now">${m.measured ? '1/' + Math.round(m.measured) : '—'}</span> <span class="muted small">(${m.k}/${m.N})</span>`
+            : `<span class="now">${m.measured != null ? m.measured.toFixed(1) + '%' : '—'}</span> <span class="muted small">(${m.k}/${m.N})</span>`);
+      return `<div class="metric"><div class="mhead"><span class="mname">${esc(m.label)}</span><span class="meas">${measTxt}</span></div></div>`;
+    }).join('');
+    return `<div class="card">${head}<div style="margin-top:12px">${metricsHtml}</div>
+      <div class="muted small" style="margin-top:10px">※ 保存済みの記録に判別ロジックを当てた事後の推定です。</div></div>`;
+  }
+
+  /* ---------- 保存済み記録：編集モーダル（タブ分け・全項目 閲覧・編集可） ---------- */
   function openSessionEditModal(s) {
+    let seTab = 'basic'; // basic | hits | counts | predict
     // 作業用ディープコピー。保存を押すまで元データには触れない（履歴を編集しても他の入力欄が消えない）
     const w = JSON.parse(JSON.stringify(s));
     if (!Array.isArray(w.history)) w.history = [];
@@ -1602,81 +1675,87 @@
     };
     recalc();
 
-    let date = w.date || '';
-    if (!date) { const d = new Date(w.startedAt); date = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
+    if (!w.date) { const d = new Date(w.startedAt); w.date = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
 
+    const tabsBar = () => {
+      const T = [['basic', '基本'], ['hits', '大当たり履歴'], ['counts', 'カウンター'], ['predict', '設定予測']];
+      return `<div class="se-tabs">${T.map(([k, l]) => `<button class="se-tab ${seTab === k ? 'on' : ''}" data-setab="${k}">${l}</button>`).join('')}</div>`;
+    };
     const bodyHtml = () => {
       const counters = (prof && prof.counters) ? prof.counters : [];
       const ro = hasHist() ? 'readonly class="auto-ro"' : 'inputmode="numeric"';
-      return `
-      <h3>記録を編集</h3>
-      <label class="field"><span>機種名</span>
-        <input id="se-machine" value="${esc(w.machine || '')}" /></label>
-      <div class="edit-grid">
-        <label class="field" style="margin:0"><span>店舗</span>
-          <input id="se-store" value="${esc(w.store || '')}" placeholder="店名" /></label>
-        <label class="field" style="margin:0"><span>台番</span>
-          <input id="se-no" inputmode="numeric" value="${esc(w.machineNo || '')}" placeholder="台番号" /></label>
-      </div>
-      <label class="field"><span>日付</span>
-        <input id="se-date" type="date" value="${esc(date)}" /></label>
-      <div class="edit-grid">
-        <label class="field" style="margin:0"><span>総G</span>
-          <input id="se-total" inputmode="numeric" value="${w.total_spins || 0}" /></label>
-        <label class="field" style="margin:0"><span>スタートG</span>
-          <input id="se-start" inputmode="numeric" value="${w.start_spins || 0}" /></label>
-      </div>
-      <div class="edit-grid">
-        <label class="field" style="margin:0"><span>投資金額（円）</span>
-          <input id="se-invest" inputmode="numeric" value="${w.invest || 0}" /></label>
-        <label class="field" style="margin:0"><span>有効G数</span>
-          <input id="se-validg" inputmode="numeric" value="${w.valid_g || 0}" /></label>
-      </div>
-      <label class="field"><span>当たり回数${hasHist() ? '（自動）' : ''}</span>
-        <input id="se-hits" value="${w.hits || 0}" ${ro} /></label>
-      <label class="field"><span>累計G（初当計算）${hasHist() ? '（自動）' : ''}</span>
-        <input id="se-cumg" value="${w.cumG || 0}" ${ro} /></label>
-      <label class="field"><span>メモ</span>
-        <textarea id="se-note" rows="2">${esc(w.note || '')}</textarea></label>
-
-      <div class="se-sec">
+      let sec = '';
+      if (seTab === 'basic') sec = `
+        <label class="field"><span>機種名</span>
+          <input id="se-machine" value="${esc(w.machine || '')}" /></label>
+        <div class="edit-grid">
+          <label class="field" style="margin:0"><span>店舗</span>
+            <input id="se-store" value="${esc(w.store || '')}" placeholder="店名" /></label>
+          <label class="field" style="margin:0"><span>台番</span>
+            <input id="se-no" inputmode="numeric" value="${esc(w.machineNo || '')}" placeholder="台番号" /></label>
+        </div>
+        <label class="field"><span>日付</span>
+          <input id="se-date" type="date" value="${esc(w.date)}" /></label>
+        <div class="edit-grid">
+          <label class="field" style="margin:0"><span>総G</span>
+            <input id="se-total" inputmode="numeric" value="${w.total_spins || 0}" /></label>
+          <label class="field" style="margin:0"><span>スタートG</span>
+            <input id="se-start" inputmode="numeric" value="${w.start_spins || 0}" /></label>
+        </div>
+        <div class="edit-grid">
+          <label class="field" style="margin:0"><span>投資金額（円）</span>
+            <input id="se-invest" inputmode="numeric" value="${w.invest || 0}" /></label>
+          <label class="field" style="margin:0"><span>有効G数</span>
+            <input id="se-validg" inputmode="numeric" value="${w.valid_g || 0}" /></label>
+        </div>
+        <label class="field"><span>当たり回数${hasHist() ? '（自動）' : ''}</span>
+          <input id="se-hits" value="${w.hits || 0}" ${ro} /></label>
+        <label class="field"><span>累計G（初当計算）${hasHist() ? '（自動）' : ''}</span>
+          <input id="se-cumg" value="${w.cumG || 0}" ${ro} /></label>
+        <label class="field"><span>メモ</span>
+          <textarea id="se-note" rows="2">${esc(w.note || '')}</textarea></label>`;
+      else if (seTab === 'hits') sec = `
         <div class="se-sec-h">大当たり履歴 <span class="acc-count">${w.history.length}</span></div>
         <button class="btn small block" id="se-add-hit">＋ 履歴を追加</button>
         ${w.history.length
           ? `<div class="hist-list" style="margin-top:8px">${w.history.map((h, i) => ({ h, i })).reverse().map(({ h, i }) => hitRowHtml(prof, h, `data-se-hit="${i}"`)).join('')}</div>`
           : '<div class="muted small" style="margin-top:6px">まだ登録がありません。</div>'}
-      </div>
-
-      ${counters.length ? `
-      <div class="se-sec">
+        <div class="card" style="margin-top:12px">${slumpSvg(w.history)}</div>`;
+      else if (seTab === 'counts') sec = counters.length ? `
         <div class="se-sec-h">カウント</div>
         <div class="edit-grid">
           ${counters.map(c => `<label class="field" style="margin:0"><span>${esc(c.label)}</span>
             <input data-se-cnt="${esc(c.key)}" inputmode="numeric" value="${w.counts[c.key] || 0}" /></label>`).join('')}
-        </div>
-      </div>` : ''}
+        </div>`
+        : '<div class="muted small center" style="padding:20px 0">この機種にはカウンターがありません。</div>';
+      else sec = expectationHtmlRO(prof, w);
 
+      return `
+      <h3>記録を編集</h3>
+      ${tabsBar()}
+      <div class="se-body">${sec}</div>
       <div class="mfoot">
-        <button class="btn danger" id="se-del">削除</button>
         <button class="btn primary" id="se-save">保存</button>
+        <button class="btn ghost" data-close>キャンセル</button>
+        <button class="btn danger" id="se-del">削除</button>
       </div>`;
     };
 
-    // 入力欄の現在値を作業コピーへ取り込む（再描画で失わないため）
+    // 入力欄の現在値を作業コピーへ取り込む（タブ切替・再描画で失わないため。存在する欄だけ更新）
     const syncFields = (root) => {
-      const v = (id) => (root.querySelector('#' + id) || {}).value;
-      w.machine = (v('se-machine') || '').trim();
-      w.store = v('se-store') || '';
-      w.machineNo = v('se-no') || '';
-      w.date = v('se-date') || '';
-      w.total_spins = parseInt(v('se-total') || '0', 10) || 0;
-      w.start_spins = parseInt(v('se-start') || '0', 10) || 0;
-      w.valid_g = parseInt(v('se-validg') || '0', 10) || 0;
-      w.invest = parseInt(v('se-invest') || '0', 10) || 0;
-      w.note = v('se-note') || '';
+      const setIf = (id, fn) => { const el = root.querySelector('#' + id); if (el) fn(el.value); };
+      setIf('se-machine', v => w.machine = (v || '').trim());
+      setIf('se-store', v => w.store = v || '');
+      setIf('se-no', v => w.machineNo = v || '');
+      setIf('se-date', v => w.date = v || '');
+      setIf('se-total', v => w.total_spins = parseInt(v || '0', 10) || 0);
+      setIf('se-start', v => w.start_spins = parseInt(v || '0', 10) || 0);
+      setIf('se-validg', v => w.valid_g = parseInt(v || '0', 10) || 0);
+      setIf('se-invest', v => w.invest = parseInt(v || '0', 10) || 0);
+      setIf('se-note', v => w.note = v || '');
       if (!hasHist()) {
-        w.hits = parseInt(v('se-hits') || '0', 10) || 0;
-        w.cumG = parseInt(v('se-cumg') || '0', 10) || 0;
+        setIf('se-hits', v => w.hits = parseInt(v || '0', 10) || 0);
+        setIf('se-cumg', v => w.cumG = parseInt(v || '0', 10) || 0);
       }
       root.querySelectorAll('[data-se-cnt]').forEach(inp => {
         w.counts[inp.getAttribute('data-se-cnt')] = parseInt(inp.value || '0', 10) || 0;
@@ -1687,7 +1766,13 @@
       const modal = root.querySelector('.modal');
       const rerender = () => { recalc(); modal.innerHTML = bodyHtml(); bind(root); };
 
-      root.querySelector('#se-add-hit').onclick = () => {
+      // タブ切替：現在の入力を退避してから切り替える（他タブの内容を失わない）
+      root.querySelectorAll('[data-setab]').forEach(b => b.onclick = () => {
+        syncFields(root); seTab = b.getAttribute('data-setab'); rerender();
+      });
+
+      const addHit = root.querySelector('#se-add-hit');
+      if (addHit) addHit.onclick = () => {
         syncFields(root);
         hitEditor({ prof, history: w.history, index: -1, onDone: rerender });
       };
@@ -1772,7 +1857,6 @@
     $app.innerHTML = `
       <div class="screen-head">
         <h1>収支</h1>
-        <button class="btn" id="store-master" style="margin-left:auto">⚙ 店舗マスタ</button>
       </div>
       <div class="pl-subtabs">
         <button class="pl-subtab ${view === 'calendar' ? 'on' : ''}" data-plview="calendar">📅 カレンダー</button>
@@ -1780,7 +1864,6 @@
       </div>
       <div id="pl-content">${view === 'calendar' ? plCalendarHtml(rows, groups) : plAnalysisHtml(rows, sessions)}</div>
     `;
-    document.getElementById('store-master').onclick = openStoreMaster;
     $app.querySelectorAll('[data-plview]').forEach(b => b.onclick = () => { state.plView = b.getAttribute('data-plview'); renderPL(); });
     if (view === 'calendar') bindCalendar(rows, groups); else bindAnalysis(rows, sessions);
   }
@@ -1810,8 +1893,12 @@
       const e = byDate.get(ds);
       const cls = e ? (e.profit > 0 ? 'plus' : (e.profit < 0 ? 'minus' : 'has')) : '';
       const isToday = ds === today ? ' today' : '';
-      const val = e ? `<div class="dv">${e.profit >= 0 ? '+' : ''}${plShort(e.profit)}</div>` : `<div class="dv"></div>`;
-      cells += `<div class="cal-cell ${cls}${e ? ' has' : ''}${isToday}" ${e ? `data-calday="${ds}"` : ''}>
+      // データのある日＝金額を表示・タップで編集。無い日＝＋マークでその日に新規登録できる。
+      const val = e
+        ? `<div class="dv">${e.profit >= 0 ? '+' : ''}${plShort(e.profit)}</div>`
+        : `<div class="dv add">＋</div>`;
+      const attr = e ? `data-calday="${ds}"` : `data-calnew="${ds}"`;
+      cells += `<div class="cal-cell ${cls}${e ? ' has' : ' addable'}${isToday}" ${attr}>
         <div class="dn">${dd}</div>${val}</div>`;
     }
     const mtCls = monthTotal > 0 ? 'plus' : (monthTotal < 0 ? 'minus' : 'zero');
@@ -1850,6 +1937,11 @@
       const dayGroups = [...groups.values()].filter(g => g.date === ds);
       if (dayGroups.length === 1) openDayModal(dayGroups[0]);
       else if (dayGroups.length > 1) openDayChooser(ds, dayGroups);
+    });
+    // 実績のない日：その日付で新規に収支を登録
+    $app.querySelectorAll('[data-calnew]').forEach(c => c.onclick = () => {
+      const ds = c.getAttribute('data-calnew');
+      openDayModal({ id: dayId(ds, ''), date: ds, store: '', sessions: [] }, { manual: true });
     });
   }
   // 同じ日に複数店舗ある場合の選択モーダル
@@ -1948,18 +2040,23 @@
   }
 
   /* ---------- 収支の詳細・編集モーダル ---------- */
-  function openDayModal(group) {
+  function openDayModal(group, opts) {
+    const manual = !!(opts && opts.manual); // カレンダーの空き日から新規登録
     const c = computeDay(group);
     // 作業コピー（保存を押すまで確定しない）
     const w = {
       id: c.id, date: c.date, store: c.store, event: c.event,
       invest: c.invest, payoutMedals: c.payoutMedals, payout: c.payout, rate: c.rate,
     };
-    const inMaster = !!findStore(c.store);
+    const inMaster = () => !!findStore(w.store);
 
     const body = () => `
       <h3>収支（${esc(w.date || '日付なし')}${w.store ? '・' + esc(w.store) : ''}）</h3>
-      <div class="muted small" style="margin-bottom:8px">日付・店舗は各台の記録から自動で束ねています（変更は記録タブから）。</div>
+      ${manual
+        ? `<label class="field"><span>店舗</span>
+             <select id="d-store">${storeOptionsHtml(w.store || '')}</select></label>
+           <div class="muted small" style="margin-bottom:8px">${w.date ? esc(fmtDateJp(w.date)) : ''} の収支を新規登録します。</div>`
+        : '<div class="muted small" style="margin-bottom:8px">日付・店舗は各台の記録から自動で束ねています（変更は記録タブから）。</div>'}
 
       <div class="edit-grid">
         <label class="field" style="margin:0"><span>投資金額（円）</span>
@@ -1976,10 +2073,10 @@
           <label class="field" style="margin:0"><span>出玉（枚）</span>
             <input id="d-medals" inputmode="numeric" value="${w.payoutMedals || ''}" placeholder="0" /></label>
           <div class="field" style="margin:0"><span>換金率</span>
-            <div class="rate-disp">${w.rate}円/枚 ${inMaster ? '' : '<span class="muted small">(既定)</span>'}</div></div>
+            <div class="rate-disp">${Math.round(w.rate * 100) / 100}円/枚 ${inMaster() ? '' : '<span class="muted small">(既定)</span>'}</div></div>
         </div>
         <button class="btn small block" id="d-calc" style="margin-top:8px">🖩 出玉 × 換金率 で回収を計算</button>
-        ${inMaster ? '' : `<div class="muted small" style="margin-top:6px">この店舗は店舗マスタ未登録です（換金率${DEFAULT_RATE}円/枚で計算）。⚙店舗マスタで登録できます。</div>`}
+        ${inMaster() ? '' : `<div class="muted small" style="margin-top:6px">この店舗は店舗マスタ未登録です（換金率${DEFAULT_RATE}円/枚で計算）。⚙店舗マスタ（設定タブ）で登録できます。</div>`}
       </div>
 
       <label class="field" style="margin-top:10px"><span>回収金額（円・編集可）</span>
@@ -2006,12 +2103,14 @@
       </div>
 
       <div class="mfoot">
-        ${c.rec ? '<button class="btn danger" id="d-del">収支を削除</button>' : ''}
         <button class="btn primary" id="d-save">保存</button>
+        <button class="btn ghost" data-close>キャンセル</button>
+        ${c.rec ? '<button class="btn danger" id="d-del">削除</button>' : ''}
       </div>`;
 
     const sync = (root) => {
       const v = (id) => (root.querySelector('#' + id) || {}).value;
+      const stEl = root.querySelector('#d-store'); if (stEl) w.store = stEl.value;
       w.invest = parseInt(v('d-invest') || '0', 10) || 0;
       w.event = v('d-event') || '';
       w.payoutMedals = parseInt(v('d-medals') || '0', 10) || 0;
@@ -2026,6 +2125,10 @@
 
     openModal(body(), function bind(root) {
       const modal = root.querySelector('.modal');
+      const rerender = () => { modal.innerHTML = body(); bind(root); };
+      // 新規登録時：店舗を選ぶと換金率も切り替わる
+      const st = root.querySelector('#d-store');
+      if (st) st.onchange = () => { sync(root); w.store = st.value; w.rate = storeRate(w.store); rerender(); };
       ['d-invest', 'd-payout', 'd-medals'].forEach(id => {
         const el = root.querySelector('#' + id);
         if (el) el.oninput = () => { sync(root); refreshProfit(root); };
@@ -2044,8 +2147,10 @@
       });
       root.querySelector('#d-save').onclick = async () => {
         sync(root);
+        // 新規登録は「日付＋店舗」から決定的なIDを付け直す（店舗を選び直しても重複しない）
+        const recId = manual ? dayId(w.date, w.store) : w.id;
         const rec = {
-          id: w.id, date: w.date, store: w.store, event: w.event,
+          id: recId, date: w.date, store: w.store, event: w.event,
           invest: w.invest, payoutMedals: w.payoutMedals, payout: w.payout, rate: w.rate,
           createdAt: (c.rec && c.rec.createdAt) || Date.now(),
         };
@@ -2119,8 +2224,11 @@
     layer.className = 'modal-back';
     layer.innerHTML = `<div class="modal">${html}</div>`;
     $modalRoot.appendChild(layer);
-    layer.onclick = (e) => { if (e.target === layer) closeModal(); };
-    layer.querySelectorAll('[data-close]').forEach(b => b.onclick = () => closeModal());
+    // 背景タップ / data-close ボタンで閉じる。委譲にして、内容を差し替え（タブ切替等）した後の
+    // data-close ボタンでも確実に効くようにする。
+    layer.addEventListener('click', (e) => {
+      if (e.target === layer || (e.target.closest && e.target.closest('[data-close]'))) closeModal();
+    });
     if (onMount) onMount(layer);
   }
   function closeModal() {
