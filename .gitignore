@@ -1,0 +1,5 @@
+# LAN同期サーバー(旧F2・Supabase移行前)のランタイム生成物。静的配信には不要。
+sync_data.json
+
+# OS
+.DS_Store
