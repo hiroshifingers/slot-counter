@@ -5,6 +5,40 @@
   const uid = (pre) => pre + '_' + Date.now().toString(36) + Math.floor(Math.random() * 1e4).toString(36);
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
   const slug = (s) => (s || '').toLowerCase().replace(/[^a-z0-9_]+/g, '_').replace(/^_|_$/g, '') || ('c' + Date.now().toString(36).slice(-4));
+
+  /* ---------- カラーパレット（カウンター／契機タグ用） ---------- */
+  const PALETTE = [
+    { id: '',        label: 'なし' },
+    { id: 'magenta', label: 'マゼンタ' },
+    { id: 'cyan',    label: 'シアン' },
+    { id: 'lime',    label: 'ライム' },
+    { id: 'green',   label: 'グリーン' },
+    { id: 'gold',    label: 'ゴールド' },
+    { id: 'orange',  label: 'オレンジ' },
+    { id: 'red',     label: 'レッド' },
+    { id: 'purple',  label: 'パープル' },
+    { id: 'blue',    label: 'ブルー' },
+  ];
+  const colorClass = (c) => (c ? ' has-color clr-' + c : '');
+  const colorDot = (c) => (c ? `<span class="clr-dot clr-${c}"></span>` : '');
+  // カラー選択スウォッチ（モーダル内で使用）。data-clr でクリック値を拾う
+  function colorSwatchesHtml(sel) {
+    return `<div class="clr-swatches">${PALETTE.map(p =>
+      `<button type="button" class="clr-sw ${p.id ? 'clr-' + p.id : 'none'} ${(sel || '') === p.id ? 'sel' : ''}" data-clr="${p.id}" title="${esc(p.label)}">${p.id ? '' : '✕'}</button>`
+    ).join('')}</div>`;
+  }
+  // スウォッチ選択のイベント束ね。選択値を onPick(id) で返す
+  function bindSwatches(root, onPick) {
+    root.querySelectorAll('[data-clr]').forEach(b => b.onclick = () => {
+      const v = b.getAttribute('data-clr');
+      root.querySelectorAll('[data-clr]').forEach(x => x.classList.toggle('sel', x === b));
+      onPick(v);
+    });
+  }
+  const triggerColor = (prof, key) => {
+    const t = ((prof && prof.hit_triggers) || []).find(x => x.key === key);
+    return t ? (t.color || '') : '';
+  };
   // ドラッグ&ドロップで並べ替え（handle経由のみdraggable化=入力欄の誤爆防止）
   function bindDragReorder(container, itemSelector, arr, onChange) {
     if (!container) return;
@@ -82,13 +116,14 @@
   // 大当たり履歴の1行（G数・種別・契機チップ・メモ・右端に時間）。実践タブと記録編集で共用
   function hitRowHtml(prof, h, dataAttr) {
     const trg = triggerLabel(prof, h.trigger);
+    const trgClr = colorClass(triggerColor(prof, h.trigger));
     const memo = [h.extra, h.memo].filter(Boolean).join(' · ');
     const medals = Number(h.medals) || 0;
     return `<div class="hist-row" ${dataAttr}>
       <span class="g">${esc(h.g)}G</span>
       <span class="ty">${esc(h.type)}</span>
       ${medals ? `<span class="md">+${medals}枚</span>` : ''}
-      ${trg ? `<span class="trg-chip">${esc(trg)}</span>` : ''}
+      ${trg ? `<span class="trg-chip${trgClr}">${esc(trg)}</span>` : ''}
       ${memo ? `<span class="ex">${esc(memo)}</span>` : ''}
       ${h.savedAt ? `<span class="time">${esc(h.savedAt)}</span>` : ''}
     </div>`;
@@ -166,7 +201,7 @@
   const emptySession = () => ({ total_spins: 0, start_spins: 0, valid_g: 0, counts: {}, history: [] });
 
   // tab: アプリ階層（session/profiles/edit/history）, sessionTab: セッション内タブ（pageId | 'hits' | 'judge' | 'settings'）
-  let state = { tab: 'session', sessionTab: null, profiles: [], active: null, editing: null, stores: [], days: [] };
+  let state = { tab: 'session', sessionTab: null, profiles: [], active: null, editing: null, stores: [], days: [], recentSessions: [], plView: 'calendar', plMonth: null, anDim: 'machine' };
   // 機種編集：開いているアコーディオン（再描画をまたいで開閉状態を保持）
   let openAccs = new Set();
 
@@ -266,16 +301,7 @@
     const prof = state.active ? state.profiles.find(p => p.id === state.active.profileId) : null;
 
     if (!state.active || !prof) {
-      $app.innerHTML = `
-        <div class="screen-head"><h1>実践</h1></div>
-        <div class="empty">
-          <div class="big">🎰</div>
-          <p>セッションが未開始です。<br>機種を選んで開始してください。</p>
-          <div class="btn-row" style="justify-content:center">
-            <button class="btn primary" id="pick-machine">機種を選んで開始</button>
-          </div>
-        </div>`;
-      document.getElementById('pick-machine').onclick = pickMachineToStart;
+      renderStartScreen();
       return;
     }
 
@@ -350,6 +376,60 @@
     bindContentEvents(prof);
   }
 
+  /* ---- 実践スタート画面（セッション未開始） ---- */
+  function renderStartScreen() {
+    const profs = state.profiles || [];
+    // 直近に使った機種を上に（記録の新しい順）
+    const recent = [...(state.recentSessions || [])];
+    const lastByProf = new Map();
+    recent.forEach(s => { if (!lastByProf.has(s.profileId)) lastByProf.set(s.profileId, s.startedAt); });
+    const ordered = [...profs].sort((a, b) => (lastByProf.get(b.id) || 0) - (lastByProf.get(a.id) || 0));
+
+    const cards = ordered.map(p => {
+      const last = lastByProf.get(p.id);
+      const sub = last
+        ? '前回 ' + new Date(last).toLocaleDateString('ja-JP', { month: 'numeric', day: 'numeric' })
+        : `カウンター${(p.counters || []).length}・判別${(p.metrics || []).length}`;
+      return `<button class="start-card" data-start="${p.id}">
+        <span class="ico">🎰</span>
+        <span class="body"><span class="t">${esc(p.machine)}</span><span class="sub">${esc(sub)}</span></span>
+        <span class="go">▶</span>
+      </button>`;
+    }).join('');
+
+    $app.innerHTML = `
+      <div class="start-hero">
+        <div class="logo">🎰</div>
+        <h1>実践スタート</h1>
+        <p>機種を選んで、今日の1台を打ち始めましょう。</p>
+      </div>
+      ${profs.length ? `
+        <div class="start-sec-h">機種を選んで開始</div>
+        <div class="start-cards">${cards}
+          <button class="start-card newp" id="start-new"><span class="ico">＋</span>
+            <span class="body"><span class="t">新しい機種を作る</span>
+            <span class="sub">「設定」タブの機種マスタでも編集できます</span></span></button>
+        </div>`
+        : `<div class="empty"><div class="big">🛠</div>
+            <p>まだ機種がありません。<br>最初の機種カウンターを作りましょう。</p>
+            <div class="btn-row" style="justify-content:center">
+              <button class="btn primary" id="start-new">＋ 機種を作る</button></div></div>`}
+    `;
+    $app.querySelectorAll('[data-start]').forEach(el => el.onclick = () => startSession(el.getAttribute('data-start')));
+    const nb = document.getElementById('start-new');
+    if (nb) nb.onclick = () => { state.tab = 'profiles'; render(); editProfile(null); };
+  }
+
+  async function startSession(profileId) {
+    const prof = state.profiles.find(p => p.id === profileId);
+    if (!prof) return;
+    ensurePages(prof);
+    state.active = newSession(prof);
+    state.sessionTab = prof.pages[0].id;
+    await saveActive();
+    render();
+  }
+
   function bestChipHtml(exp) {
     if (exp && exp.anyData && exp.posterior) {
       return `最有力 <b>設定${exp.best}</b> <span class="pct">${exp.posterior[exp.best].toFixed(0)}%</span>`;
@@ -374,7 +454,7 @@
         const fracStr = fmtCounterFrac(prof, c.key, cnt);
         const fracHtml = fracStr ? `<div class="cnt-frac">${fracStr}</div>` : '';
         return `
-          <div class="counter" data-inc="${esc(c.key)}">
+          <div class="counter${colorClass(c.color)}" data-inc="${esc(c.key)}">
             <div class="lbl">${esc(c.label)}</div>
             <div class="cnt">${cnt}</div>
             ${fracHtml}
@@ -692,7 +772,7 @@
               <div class="trg-glabel">${esc(g.label)}</div>
               <div class="type-grid">
                 ${triggers.filter(t => (t.group || '') === g.value).map(t =>
-                  `<button class="type-btn ${t.key === cur.trigger ? 'sel' : ''}" data-trigger="${esc(t.key)}">${esc(t.label)}</button>`).join('')}
+                  `<button class="type-btn${colorClass(t.color)} ${t.key === cur.trigger ? 'sel' : ''}" data-trigger="${esc(t.key)}">${esc(t.label)}</button>`).join('')}
               </div>
             </div>`).join('')}
         </div>` : ''}
@@ -749,22 +829,44 @@
   ============================================================ */
   function renderProfiles() {
     $app.innerHTML = `
-      <div class="screen-head"><h1>機種</h1>
-        <div class="btn-row" style="margin:0;gap:8px">
-          <button class="btn primary" id="new-prof">＋ 新規</button>
-        </div></div>
+      <div class="screen-head"><h1>設定</h1></div>
+
+      <div class="set-sec-h">機種マスタ
+        <button class="btn primary small add" id="new-prof">＋ 新規</button></div>
       ${state.profiles.length ? state.profiles.map(p => `
-        <div class="list-item" data-open="${p.id}">
-          <span class="ti">🛠</span>
+        <div class="list-item tap-row" data-open="${p.id}">
+          <span class="ti">🎰</span>
           <div class="body"><div class="t">${esc(p.machine)}</div>
             <div class="sub">画面${(p.pages||[]).length}・カウンター${(p.counters||[]).length}・判別${(p.metrics||[]).length}</div></div>
           <span class="chev">›</span>
         </div>`).join('')
-        : `<div class="empty"><div class="big">🛠</div><p>機種カウンターがまだありません。<br>「VVV2用」「東京グール用」など、機種ごとに作っていきます。</p></div>`}
+        : `<div class="empty" style="padding:24px 12px"><div class="big">🛠</div><p>機種カウンターがまだありません。<br>「VVV2用」「東京グール用」など、機種ごとに作っていきます。</p>
+            <div class="btn-row" style="justify-content:center"><button class="btn primary" id="new-prof2">＋ 機種を作る</button></div></div>`}
+
+      <div class="set-sec-h">収支の設定</div>
+      <button class="set-menu" id="open-stores">
+        <span class="ico">🏬</span>
+        <span class="body"><span class="t">店舗マスタ</span>
+          <span class="sub">交換枚数（換金率）を登録・${state.stores.length}店舗</span></span>
+        <span class="chev">›</span></button>
+
+      <div class="set-sec-h">アカウント</div>
+      <div class="set-menu" style="align-items:center">
+        <span class="ico">👤</span>
+        <span class="set-account"><span class="mail">${esc(Cloud.email() || '未ログイン')}</span></span>
+        <button class="btn small" id="logout-btn2" style="flex:none">ログアウト</button>
+      </div>
+      <div class="muted small" style="margin:8px 2px 0">クラウド同期はネット接続時に自動で行われます（記録タブの🔄で手動同期も可）。</div>
     `;
-    document.getElementById('new-prof').onclick = () => editProfile(null);
+    const nb = document.getElementById('new-prof'); if (nb) nb.onclick = () => editProfile(null);
+    const nb2 = document.getElementById('new-prof2'); if (nb2) nb2.onclick = () => editProfile(null);
     document.querySelectorAll('[data-open]').forEach(el =>
       el.onclick = () => editProfile(state.profiles.find(p => p.id === el.getAttribute('data-open'))));
+    document.getElementById('open-stores').onclick = openStoreMaster;
+    document.getElementById('logout-btn2').onclick = () => {
+      if (!confirm('ログアウトしますか？（この端末のデータは残りますが、同期が止まります）')) return;
+      Cloud.signOut(); renderLogin();
+    };
   }
 
   function editProfile(profile) {
@@ -784,7 +886,7 @@
       const sub = (dt && dt.length) ? numPart + '母数: ' + formulaText(dt, e) : 'カウントのみ';
       return `<div class="ed-sort-row tap-row" data-editckey="${esc(c.key)}">
         <span class="drag-handle" title="ドラッグで並べ替え">⠿</span>
-        <div class="tr-main"><div class="tr-name">${esc(c.label) || '(無名)'}</div>
+        <div class="tr-main"><div class="tr-name">${colorDot(c.color)}${esc(c.label) || '(無名)'}</div>
           <div class="tr-sub">${esc(sub)}</div></div>
         <button class="btn ghost small" data-delckey="${esc(c.key)}">✕</button>
       </div>`;
@@ -857,7 +959,7 @@
           ${e.hit_triggers.length ? e.hit_triggers.map((t, i) => `
             <div class="ed-sort-row tap-row" data-edittrg="${i}">
               <span class="drag-handle" title="ドラッグで並べ替え">⠿</span>
-              <div class="tr-main"><div class="tr-name">${esc(t.label) || '(無名)'}</div>
+              <div class="tr-main"><div class="tr-name">${colorDot(t.color)}${esc(t.label) || '(無名)'}</div>
                 <div class="tr-sub">${esc(groupLabel(t.group))}</div></div>
               <button class="btn ghost small" data-deltrg="${i}">✕</button>
             </div>`).join('') : '<div class="muted small">まだありません。「＋追加」から。</div>'}
@@ -1075,12 +1177,14 @@
         <select id="tm-group">
           ${TRIGGER_GROUPS.map(g => `<option value="${g.value}" ${(w.group || '') === g.value ? 'selected' : ''}>${esc(g.label)}</option>`).join('')}
         </select></label>
+      <div class="field"><span>タグの色</span>${colorSwatchesHtml(w.color)}</div>
       <div class="mfoot">
         ${isNew ? '' : '<button class="btn danger" id="tm-del">削除</button>'}
         <button class="btn primary" id="tm-save">保存</button>
       </div>
     `, (root) => {
       setTimeout(() => root.querySelector('#tm-label').focus(), 60);
+      bindSwatches(root, (v) => { if (v) w.color = v; else delete w.color; });
       root.querySelector('#tm-save').onclick = () => {
         w.label = root.querySelector('#tm-label').value.trim();
         w.group = root.querySelector('#tm-group').value;
@@ -1106,6 +1210,7 @@
         <input id="cm-label" value="${esc(w.label)}" placeholder="例 強チェリー / 共通ベル" /></label>
       <label class="field"><span>画面（タブ）</span>
         <select id="cm-page">${pageOpts}</select></label>
+      <div class="field"><span>ボタンの色</span>${colorSwatchesHtml(w.color)}</div>
       <div class="field"><span>分子＝計算式（任意）</span>
         ${fbtn(counterNumTokens(w) || [], e, 'data-cm-fnum', 0)}
         <div class="muted small" style="margin-top:4px">空のままならカウンターの値（タップ数）を分子に使います</div></div>
@@ -1123,6 +1228,7 @@
         <button class="btn primary" id="cm-save">保存</button>
       </div>
     `, (root) => {
+      bindSwatches(root, (v) => { if (v) w.color = v; else delete w.color; });
       root.querySelector('[data-cm-fnum]').onclick = () =>
         openFormulaBuilder('分子の計算式', counterNumTokens(w) || [], e, null, (toks) => {
           if (toks.length) w.numTokens = toks; else delete w.numTokens;
@@ -1406,54 +1512,75 @@
   /* ============================================================
      画面: 記録（過去セッション）
   ============================================================ */
+  const WD = ['日', '月', '火', '水', '木', '金', '土'];
+  function fmtDateJp(ymd) {
+    const p = (ymd || '').split('-');
+    if (p.length < 3) return ymd || '';
+    const d = new Date(+p[0], +p[1] - 1, +p[2]);
+    return `${+p[1]}/${+p[2]}（${WD[d.getDay()]}）`;
+  }
+
   async function renderHistory() {
     const sessions = (await DB.getSessions()).sort((a, b) => b.startedAt - a.startedAt);
+    // 日付でグループ化（新しい順）
+    const byDate = new Map();
+    sessions.forEach(s => {
+      const d = sessDate(s);
+      if (!byDate.has(d)) byDate.set(d, []);
+      byDate.get(d).push(s);
+    });
+    const dates = [...byDate.keys()].sort((a, b) => b.localeCompare(a));
+
+    const cardHtml = (s) => {
+      const diff = sessionDiff(s);
+      const cls = diff > 0 ? 'plus' : (diff < 0 ? 'minus' : '');
+      const meta = [
+        s.store ? esc(s.store) : '',
+        s.machineNo ? '台' + esc(s.machineNo) : '',
+        `<span>総<b>${s.total_spins || 0}</b>G</span>`,
+        `<span>初当<b>${fmtRate(s.cumG || 0, s.hits || 0)}</b></span>`,
+        `<span>当り<b>${s.hits || 0}</b>回</span>`,
+      ].filter(Boolean).join(' ');
+      return `<div class="rec-card ${cls}" data-sess="${s.id}">
+        <div class="accent"></div>
+        <div class="main tap-row">
+          <div class="r1"><span class="mc">${esc(s.machine || '機種')}</span>
+            <span class="diff ${cls}">${diff >= 0 ? '+' : ''}${diff}枚</span></div>
+          <div class="r2">${meta}</div>
+        </div>
+        <button class="edit" data-editsess="${s.id}" title="編集">✎</button>
+      </div>`;
+    };
+
+    const groupsHtml = dates.map(d => {
+      const list = byDate.get(d);
+      const dayDiff = list.reduce((a, s) => a + sessionDiff(s), 0);
+      const dcls = dayDiff > 0 ? 'plus' : (dayDiff < 0 ? 'minus' : '');
+      return `<div class="rec-daygroup-h"><span>${fmtDateJp(d)}</span>
+          <span class="muted">${list.length}台</span>
+          <span class="dp ${dcls}">${dayDiff >= 0 ? '+' : ''}${dayDiff}枚</span></div>
+        ${list.map(cardHtml).join('')}`;
+    }).join('');
+
     $app.innerHTML = `
       <div class="screen-head">
         <h1>記録</h1>
         <button class="btn" id="sync-btn" style="margin-left:auto">🔄 同期</button>
       </div>
-      <div id="sync-note" class="muted" style="font-size:12px;margin:-4px 2px 10px">${esc(SYNC.lastMsg || 'クラウド同期：ネット接続時に自動で同期されます（🔄で手動同期）')}</div>
-      ${sessions.length ? sessions.map(s => {
-        let date = s.date || '';
-        if (!date) { const d = new Date(s.startedAt); date = `${d.getMonth() + 1}/${d.getDate()}`; }
-        const head = [date, s.store, s.machineNo ? ('台' + s.machineNo) : ''].filter(Boolean).join('・');
-        return `<div class="list-item tap-row" data-sess="${s.id}">
-          <span class="ti">📊</span>
-          <div class="body"><div class="t">${esc(s.machine)}</div>
-            <div class="sub">${esc(head)}${head ? '・' : ''}総${s.total_spins || 0}G・初当${fmtRate(s.cumG || 0, s.hits || 0)}・当たり${s.hits || 0}回</div></div>
-          <button class="del" data-delsess="${s.id}" style="color:var(--bad);background:none;border:none">削除</button>
-        </div>`;
-      }).join('')
-        : `<div class="empty"><div class="big">📊</div><p>保存したセッションがここに並びます。<br>実践→設定タブの「保存して終了」で残せます。<br>行をタップで編集できます。</p></div>`}
-      <div class="muted" style="font-size:12px;margin:18px 2px 8px;display:flex;align-items:center;gap:10px">
-        <span>👤 ${esc(Cloud.email() || '未ログイン')}</span>
-        <button class="btn" id="logout-btn" style="margin-left:auto;font-size:12px;padding:4px 10px">ログアウト</button>
-      </div>
+      <div id="sync-note" class="muted" style="font-size:12px;margin:-4px 2px 12px">${esc(SYNC.lastMsg || 'クラウド同期：ネット接続時に自動で同期されます（🔄で手動同期）')}</div>
+      ${sessions.length ? groupsHtml
+        : `<div class="empty"><div class="big">📊</div><p>保存したセッションがここに並びます。<br>実践→「実践終了」タブの「保存して終了」で残せます。<br>カードをタップで編集できます。</p></div>`}
     `;
-    document.querySelectorAll('[data-delsess]').forEach(b =>
-      b.onclick = async (ev) => {
-        ev.stopPropagation();
-        const id = b.getAttribute('data-delsess');
-        await DB.delSession(id); addTombstone('pc_sessions', id);
-        renderHistory(); syncNow(false);
-      });
-    document.querySelectorAll('[data-sess]').forEach(row =>
-      row.onclick = (ev) => {
-        if (ev.target.closest('[data-delsess]')) return;
-        const s = sessions.find(x => x.id === row.getAttribute('data-sess'));
-        if (s) openSessionEditModal(s);
-      });
+    const openEdit = (id) => { const s = sessions.find(x => x.id === id); if (s) openSessionEditModal(s); };
+    $app.querySelectorAll('[data-sess] .main').forEach(m =>
+      m.onclick = () => openEdit(m.closest('[data-sess]').getAttribute('data-sess')));
+    $app.querySelectorAll('[data-editsess]').forEach(b =>
+      b.onclick = (ev) => { ev.stopPropagation(); openEdit(b.getAttribute('data-editsess')); });
     const syncBtn = document.getElementById('sync-btn');
     if (syncBtn) syncBtn.onclick = async () => {
       const note = document.getElementById('sync-note');
       syncBtn.disabled = true; if (note) note.textContent = '同期中…';
       await syncNow(true);
-    };
-    const logoutBtn = document.getElementById('logout-btn');
-    if (logoutBtn) logoutBtn.onclick = () => {
-      if (!confirm('ログアウトしますか？（この端末のデータは残りますが、同期が止まります）')) return;
-      Cloud.signOut(); renderLogin();
     };
   }
 
@@ -1622,7 +1749,8 @@
     return { ...g, rec, autoMedals, autoInvest, rate, payoutMedals, invest, payout, event, profit: payout - invest };
   }
 
-  async function renderPL() {
+  // 収支データ: (date,store)ごとの group Map と computeDay 行、生セッションを返す
+  async function plData() {
     const sessions = await DB.getSessions();
     const groups = new Map();
     sessions.forEach(s => {
@@ -1631,32 +1759,191 @@
       if (!groups.has(id)) groups.set(id, { id, date, store, sessions: [] });
       groups.get(id).sessions.push(s);
     });
-    // セッションが無い（手動作成の）収支記録も拾う
     state.days.forEach(d => { if (!groups.has(d.id)) groups.set(d.id, { id: d.id, date: d.date || '', store: d.store || '', sessions: [] }); });
-    const rows = [...groups.values()].map(computeDay).sort((a, b) => (b.date || '').localeCompare(a.date || '') || (b.store || '').localeCompare(a.store || ''));
-    const totalProfit = rows.reduce((a, r) => a + r.profit, 0);
+    const rows = [...groups.values()].map(computeDay);
+    return { sessions, groups, rows };
+  }
+
+  async function renderPL() {
+    const { sessions, groups, rows } = await plData();
+    if (!state.plMonth) state.plMonth = todayStr().slice(0, 7);
+    const view = state.plView || 'calendar';
 
     $app.innerHTML = `
       <div class="screen-head">
         <h1>収支</h1>
         <button class="btn" id="store-master" style="margin-left:auto">⚙ 店舗マスタ</button>
       </div>
-      ${rows.length ? `<div class="pl-total ${totalProfit >= 0 ? 'plus' : 'minus'}">通算 ${totalProfit >= 0 ? '+' : ''}${yen(totalProfit)}円<span class="muted small">（${rows.length}日）</span></div>` : ''}
-      ${rows.length ? rows.map(r => `
-        <div class="list-item tap-row" data-day="${r.id}">
-          <span class="ti">💰</span>
-          <div class="body">
-            <div class="t">${esc(r.date || '日付なし')}${r.store ? '・' + esc(r.store) : '・店舗未設定'}</div>
-            <div class="sub">${r.event ? esc(r.event) + '・' : ''}台${r.sessions.length}・投資${yen(r.invest)}・回収${yen(r.payout)}</div>
-          </div>
-          <span class="pl-profit ${r.profit >= 0 ? 'plus' : 'minus'}">${r.profit >= 0 ? '+' : ''}${yen(r.profit)}</span>
-        </div>`).join('')
-        : `<div class="empty"><div class="big">💰</div><p>収支がここに並びます。<br>実践で店舗・日付・出玉を登録すると<br>1日ごとに自動でまとまります。</p></div>`}
+      <div class="pl-subtabs">
+        <button class="pl-subtab ${view === 'calendar' ? 'on' : ''}" data-plview="calendar">📅 カレンダー</button>
+        <button class="pl-subtab ${view === 'analysis' ? 'on' : ''}" data-plview="analysis">📊 分析</button>
+      </div>
+      <div id="pl-content">${view === 'calendar' ? plCalendarHtml(rows, groups) : plAnalysisHtml(rows, sessions)}</div>
     `;
     document.getElementById('store-master').onclick = openStoreMaster;
-    document.querySelectorAll('[data-day]').forEach(row => row.onclick = () => {
-      const g = groups.get(row.getAttribute('data-day'));
-      if (g) openDayModal(g);
+    $app.querySelectorAll('[data-plview]').forEach(b => b.onclick = () => { state.plView = b.getAttribute('data-plview'); renderPL(); });
+    if (view === 'calendar') bindCalendar(rows, groups); else bindAnalysis(rows, sessions);
+  }
+
+  /* ---- 収支カレンダー ---- */
+  function plCalendarHtml(rows, groups) {
+    const ym = state.plMonth;                 // 'YYYY-MM'
+    const [y, m] = ym.split('-').map(Number);
+    // その月の日別合計（date -> {profit, ids:[groupId]}）
+    const byDate = new Map();
+    rows.forEach(r => {
+      if (!r.date || r.date.slice(0, 7) !== ym) return;
+      if (!byDate.has(r.date)) byDate.set(r.date, { profit: 0, ids: [] });
+      const e = byDate.get(r.date); e.profit += r.profit; e.ids.push(r.id);
+    });
+    const monthTotal = [...byDate.values()].reduce((a, e) => a + e.profit, 0);
+    const days = [...byDate.values()].length;
+    const first = new Date(y, m - 1, 1);
+    const startDow = first.getDay();
+    const daysInMonth = new Date(y, m, 0).getDate();
+    const today = todayStr();
+
+    let cells = '';
+    for (let i = 0; i < startDow; i++) cells += `<div class="cal-cell empty"></div>`;
+    for (let dd = 1; dd <= daysInMonth; dd++) {
+      const ds = `${y}-${String(m).padStart(2, '0')}-${String(dd).padStart(2, '0')}`;
+      const e = byDate.get(ds);
+      const cls = e ? (e.profit > 0 ? 'plus' : (e.profit < 0 ? 'minus' : 'has')) : '';
+      const isToday = ds === today ? ' today' : '';
+      const val = e ? `<div class="dv">${e.profit >= 0 ? '+' : ''}${plShort(e.profit)}</div>` : `<div class="dv"></div>`;
+      cells += `<div class="cal-cell ${cls}${e ? ' has' : ''}${isToday}" ${e ? `data-calday="${ds}"` : ''}>
+        <div class="dn">${dd}</div>${val}</div>`;
+    }
+    const mtCls = monthTotal > 0 ? 'plus' : (monthTotal < 0 ? 'minus' : 'zero');
+    const dowH = ['日', '月', '火', '水', '木', '金', '土'].map((d, i) =>
+      `<div class="cal-dow ${i === 0 ? 'sun' : i === 6 ? 'sat' : ''}">${d}</div>`).join('');
+    return `
+      <div class="cal-head">
+        <button class="cal-nav" id="cal-prev">‹</button>
+        <div class="cal-month"><div class="m">${y}年${m}月</div>
+          <div class="tot ${mtCls}">${monthTotal >= 0 ? '+' : ''}${yen(monthTotal)}円</div></div>
+        <button class="cal-nav" id="cal-next">›</button>
+      </div>
+      <div class="cal-sub"><span>収支のある日 ${days}日</span></div>
+      <div class="cal-grid">${dowH}${cells}</div>
+      <div class="muted small center" style="margin-top:12px">日付をタップすると、その日の投資・回収・台別成績を編集できます。</div>`;
+  }
+  // 金額をセル内に収める短縮表記（±1.2k / ±34k）
+  function plShort(n) {
+    const a = Math.abs(n);
+    if (a >= 10000) return Math.round(n / 1000) + 'k';
+    if (a >= 1000) return (Math.round(n / 100) / 10) + 'k';
+    return String(n);
+  }
+  function shiftMonth(ym, delta) {
+    let [y, m] = ym.split('-').map(Number);
+    m += delta;
+    while (m < 1) { m += 12; y--; }
+    while (m > 12) { m -= 12; y++; }
+    return `${y}-${String(m).padStart(2, '0')}`;
+  }
+  function bindCalendar(rows, groups) {
+    document.getElementById('cal-prev').onclick = () => { state.plMonth = shiftMonth(state.plMonth, -1); renderPL(); };
+    document.getElementById('cal-next').onclick = () => { state.plMonth = shiftMonth(state.plMonth, 1); renderPL(); };
+    $app.querySelectorAll('[data-calday]').forEach(c => c.onclick = () => {
+      const ds = c.getAttribute('data-calday');
+      const dayGroups = [...groups.values()].filter(g => g.date === ds);
+      if (dayGroups.length === 1) openDayModal(dayGroups[0]);
+      else if (dayGroups.length > 1) openDayChooser(ds, dayGroups);
+    });
+  }
+  // 同じ日に複数店舗ある場合の選択モーダル
+  function openDayChooser(ds, dayGroups) {
+    openModal(`
+      <h3>${esc(fmtDateJp(ds))} の収支</h3>
+      <div class="muted small" style="margin-bottom:8px">この日は複数の店舗の記録があります。開く方を選んでください。</div>
+      <div>${dayGroups.map(g => {
+        const c = computeDay(g);
+        return `<div class="list-item tap-row" data-pickday="${g.id}">
+          <span class="ti">💰</span>
+          <div class="body"><div class="t">${esc(g.store || '店舗未設定')}</div>
+            <div class="sub">台${g.sessions.length}・投資${yen(c.invest)}・回収${yen(c.payout)}</div></div>
+          <span class="pl-profit ${c.profit >= 0 ? 'plus' : 'minus'}">${c.profit >= 0 ? '+' : ''}${yen(c.profit)}</span>
+        </div>`;
+      }).join('')}</div>
+      <div class="mfoot"><button class="btn ghost" data-close>閉じる</button></div>
+    `, (root) => {
+      root.querySelectorAll('[data-pickday]').forEach(el => el.onclick = () => {
+        const g = dayGroups.find(x => x.id === el.getAttribute('data-pickday'));
+        closeModal(); if (g) openDayModal(g);
+      });
+    });
+  }
+
+  /* ---- 収支分析（機種別 / 店舗別 / 曜日別） ---- */
+  function plAnalysisHtml(rows, sessions) {
+    const dim = state.anDim || 'machine';
+    let items;   // [{name, profit, count}]
+    if (dim === 'machine') {
+      // 機種別は台（セッション）単位の 回収−投資 を集計。
+      // 回収は手入力があれば優先、無ければ 出玉×換金率（カレンダーと同じ自動基準）
+      const map = new Map();
+      sessions.forEach(s => {
+        const name = s.machine || '機種未設定';
+        const payout = (Number(s.payout) > 0) ? Number(s.payout) : Math.round(sessionMedals(s) * storeRate(s.store));
+        const profit = payout - (Number(s.invest) || 0);
+        if (!map.has(name)) map.set(name, { name, profit: 0, count: 0 });
+        const e = map.get(name); e.profit += profit; e.count++;
+      });
+      items = [...map.values()];
+    } else if (dim === 'store') {
+      const map = new Map();
+      rows.forEach(r => {
+        const name = r.store || '店舗未設定';
+        if (!map.has(name)) map.set(name, { name, profit: 0, count: 0 });
+        const e = map.get(name); e.profit += r.profit; e.count++;
+      });
+      items = [...map.values()];
+    } else { // weekday
+      const map = new Map();
+      WD.forEach((_, i) => map.set(i, { name: WD[i] + '曜', profit: 0, count: 0, i }));
+      rows.forEach(r => {
+        if (!r.date) return;
+        const p = r.date.split('-').map(Number);
+        const wd = new Date(p[0], p[1] - 1, p[2]).getDay();
+        const e = map.get(wd); e.profit += r.profit; e.count++;
+      });
+      items = [...map.values()].filter(e => e.count > 0);
+    }
+    const totalProfit = items.reduce((a, e) => a + e.profit, 0);
+    // 曜日は曜日順、それ以外は収支の大きい順
+    if (dim === 'weekday') items.sort((a, b) => a.i - b.i);
+    else items.sort((a, b) => b.profit - a.profit);
+    const maxAbs = Math.max(1, ...items.map(e => Math.abs(e.profit)));
+
+    const tabs = [['machine', '機種別'], ['store', '店舗別'], ['weekday', '曜日別']]
+      .map(([k, l]) => `<button class="an-dim ${dim === k ? 'on' : ''}" data-andim="${k}">${l}</button>`).join('');
+
+    const totCls = totalProfit > 0 ? 'plus' : (totalProfit < 0 ? 'minus' : 'zero');
+    const body = items.length ? items.map(e => {
+      const cls = e.profit >= 0 ? 'plus' : 'minus';
+      const w = Math.round(Math.abs(e.profit) / maxAbs * 100);
+      return `<div class="an-row">
+        <div class="an-top"><span class="an-name">${esc(e.name)}</span>
+          <span class="an-prof ${cls}">${e.profit >= 0 ? '+' : ''}${yen(e.profit)}円</span></div>
+        <div class="an-bar-track"><div class="an-bar ${cls}" style="width:${w}%"></div></div>
+        <div class="an-meta">${e.count}${dim === 'machine' ? '台' : '日'}${e.count ? '・平均 ' + (e.profit >= 0 ? '+' : '') + yen(Math.round(e.profit / e.count)) + '円' : ''}</div>
+      </div>`;
+    }).join('') : `<div class="empty" style="padding:24px 12px"><div class="big">📊</div><p>集計できる収支データがまだありません。</p></div>`;
+
+    return `
+      <div class="pl-total ${totCls}">通算 ${totalProfit >= 0 ? '+' : ''}${yen(totalProfit)}円<span class="muted small">（全期間）</span></div>
+      <div class="an-dims">${tabs}</div>
+      <div class="card">${body}</div>
+      <div class="muted small" style="margin-top:8px">${dim === 'machine'
+        ? '機種別は台ごとの「回収−投資」を集計します（回収の手入力が無い台は 出玉×換金率 で自動計算）。'
+        : '店舗別・曜日別は日別の収支（収支カレンダーと同じ値）を集計します。'}</div>`;
+  }
+  function bindAnalysis(rows, sessions) {
+    $app.querySelectorAll('[data-andim]').forEach(b => b.onclick = () => {
+      state.anDim = b.getAttribute('data-andim');
+      const el = document.getElementById('pl-content');
+      if (el) { el.innerHTML = plAnalysisHtml(rows, sessions); bindAnalysis(rows, sessions); }
     });
   }
 
@@ -1856,6 +2143,7 @@
     state.profiles = (await DB.getProfiles()).map(ensurePages);
     state.stores = await DB.getStores().catch(() => []);
     state.days = await DB.getDays().catch(() => []);
+    state.recentSessions = (await DB.getSessions().catch(() => [])).sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0));
   }
 
   document.querySelectorAll('#tabbar .tab').forEach(t =>
