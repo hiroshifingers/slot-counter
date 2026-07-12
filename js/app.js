@@ -6,6 +6,27 @@
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
   const slug = (s) => (s || '').toLowerCase().replace(/[^a-z0-9_]+/g, '_').replace(/^_|_$/g, '') || ('c' + Date.now().toString(36).slice(-4));
 
+  /* ---------- 触覚フィードバック（バイブ） ----------
+     Android Chrome は Vibration API。iOS(Safari/ホーム画面PWA)は Vibration API 非対応のため
+     <input type="checkbox" switch> をユーザー操作中にトグルすると純正の触覚が鳴る裏技を使う（iOS 17.4+）。 */
+  let _hapticEl = null;
+  function ensureHaptic() {
+    if (_hapticEl) return _hapticEl;
+    const l = document.createElement('label');
+    l.setAttribute('aria-hidden', 'true');
+    // display:none だと触覚が鳴らないため、画面外へ逃がして描画自体は残す
+    l.style.cssText = 'position:absolute;left:-9999px;top:0;width:1px;height:1px;opacity:0;pointer-events:none;overflow:hidden';
+    const i = document.createElement('input');
+    i.type = 'checkbox'; i.setAttribute('switch', ''); i.tabIndex = -1;
+    l.appendChild(i);
+    (document.body || document.documentElement).appendChild(l);
+    _hapticEl = l; return l;
+  }
+  function haptic() {
+    try { if (navigator.vibrate) navigator.vibrate(15); } catch (e) {}
+    try { ensureHaptic().click(); } catch (e) {} // iOS純正ハプティック
+  }
+
   /* ---------- カラーパレット（カウンター／契機タグ用） ---------- */
   const PALETTE = [
     { id: '',        label: 'なし' },
@@ -234,19 +255,30 @@
 
   /* 出玉推移（差枚スランプ）SVG。history は時系列（push順）。
      区間差枚 = 出玉 − 回転数×3枚 を累積した折れ線。ライブラリ非依存。 */
-  function slumpSvg(history) {
+  function slumpSvg(history, coinHold) {
     const hits = (history || []).filter(h => (Number(h.g) || 0) > 0 || (Number(h.medals) || 0) > 0);
     if (hits.length < 1) {
-      return `<div class="muted small center" style="padding:16px 0">出玉と回転数を入れると推移グラフが出ます。</div>`;
+      return `<div class="muted small center" style="padding:16px 0">各当たりの「G数（通常はまり）」と「出玉(枚)」を入れると差枚グラフが出ます。</div>`;
     }
-    // 累積差枚の系列（起点0）
-    const pts = [0];
-    let cum = 0;
-    hits.forEach(h => { cum += (Number(h.medals) || 0) - (Number(h.g) || 0) * MEDALS_PER_G; pts.push(cum); });
+    // 差枚(累積) = Σ(出玉 − 通常G × R)。R=通常時1Gあたりの純減枚数。
+    //   出玉=AT等の獲得枚数（大当たり中はGを入れず出玉だけ）、G=通常のはまり回転数。
+    //   通常は小役の払い戻しがあるため、コイン持ち(1000円=50枚で回るG数)から純減を求める。
+    const ch = Number(coinHold) > 0 ? Number(coinHold) : 50;
+    const R = 50 / ch; // 例: コイン持ち50→1.0枚/G、40→1.25枚/G（20円貸出前提）
+    const pts = [0], gcum = [0];
+    let cum = 0, gc = 0, medalSum = 0;
+    hits.forEach(h => {
+      const g = Number(h.g) || 0, md = Number(h.medals) || 0;
+      cum += md - g * R; pts.push(Math.round(cum));
+      gc += g; gcum.push(gc);
+      medalSum += md;
+    });
     const W = 320, H = 140, PL = 6, PR = 6, PT = 10, PB = 10;
     const min = Math.min(0, ...pts), max = Math.max(0, ...pts);
     const span = (max - min) || 1;
-    const x = (i) => PL + (pts.length === 1 ? 0 : i * (W - PL - PR) / (pts.length - 1));
+    const useG = gc > 0;
+    const x = (i) => useG ? PL + gcum[i] / gc * (W - PL - PR)
+                          : PL + (pts.length === 1 ? 0 : i * (W - PL - PR) / (pts.length - 1));
     const y = (v) => PT + (max - v) * (H - PT - PB) / span;
     const line = pts.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ');
     const zeroY = y(0).toFixed(1);
@@ -255,14 +287,14 @@
     return `
       <div class="slump-wrap">
         <div class="slump-head">
-          <span class="muted small">出玉推移（差枚）</span>
+          <span class="muted small">差枚グラフ（出玉推移）</span>
           <span class="slump-end ${cls}">${end >= 0 ? '+' : ''}${end}枚</span>
         </div>
         <svg viewBox="0 0 ${W} ${H}" class="slump-svg" preserveAspectRatio="none">
           <line x1="${PL}" y1="${zeroY}" x2="${W - PR}" y2="${zeroY}" class="slump-zero" />
           <polyline points="${line}" class="slump-line ${cls}" fill="none" />
         </svg>
-        <div class="slump-foot muted small">当たり${hits.length}回・最終差枚 ${end >= 0 ? '+' : ''}${end}枚（1回転=3枚換算）</div>
+        <div class="slump-foot muted small">通常G ${gc}G・総出玉 ${medalSum}枚・当たり${hits.length}回・最終差枚 ${end >= 0 ? '+' : ''}${end}枚<br>差枚＝出玉−通常G×${(Math.round(R * 100) / 100)}枚（コイン持ち${ch}G/1000円）</div>
       </div>`;
   }
 
@@ -280,6 +312,7 @@
     if (p.hit_extra_fields) p.hit_extra_fields = p.hit_extra_fields.filter(f => !(f.key === 'diff' || f.label === '差枚'));
     if (!p.hit_triggers) p.hit_triggers = []; // 大当たり契機（旧プロファイル互換）
     if (!p.totalGMode) p.totalGMode = 'manual'; // 総Gカウント方法（manual|auto）
+    if (p.coinHold == null || !(Number(p.coinHold) > 0)) p.coinHold = 50; // 通常時コイン持ち（1000円=50枚で回るG数・差枚グラフ用）
     if (!p.type_meta || typeof p.type_meta !== 'object') p.type_meta = {}; // 大当たり種別ごとの表示/％母数設定
     return p;
   }
@@ -499,7 +532,6 @@
           ${hitRowHtml(prof, h, `data-edit-hit="${i}"`)}
         </div>`).join('')}</div>`
         : `<div class="muted small center">まだ登録がありません。打ち始めたら ＋履歴登録 から。</div>`}
-      <div class="card" style="margin-top:12px">${slumpSvg(s.history)}</div>
     `;
   }
 
@@ -519,11 +551,24 @@
       .filter(t => typeMeta(prof, t).showRate !== false);
     const cards = types.map(t => cardFor(t + '率', s.history.filter(h => h.type === t).length, typeDenomTokens(prof, t)));
     cards.push(cardFor('合算率', s.history.length, [{ var: 'played_g' }]));
-    return `<div class="stat-grid">${cards.map(c => `
-      <div class="stat"><div class="k">${esc(c.label)}</div>
-        <div class="v">${c.rate}</div>
-        <div class="pct">${c.pct}</div>
-        <div class="rcnt">${c.cnt}回</div></div>`).join('')}</div>`;
+    const cardHtml = (c) => `<div class="stat"><div class="k">${esc(c.label)}</div>
+      <div class="v">${c.rate}</div>
+      <div class="pct">${c.pct}</div>
+      <div class="rcnt">${c.cnt}回</div></div>`;
+    // 横3枚。ただし枚数を3で割った余りが1（4,7,10…）の時は末尾4枚を2+2にして
+    // 「1段に1枚だけ」を避ける（例: 4→2+2、7→3+2+2、10→3+3+2+2）。
+    const n = cards.length;
+    const rows = [];
+    if (n % 3 === 1 && n > 1) {
+      const head = cards.slice(0, n - 4);
+      for (let i = 0; i < head.length; i += 3) rows.push(head.slice(i, i + 3));
+      rows.push(cards.slice(n - 4, n - 2));
+      rows.push(cards.slice(n - 2));
+    } else {
+      for (let i = 0; i < n; i += 3) rows.push(cards.slice(i, i + 3));
+    }
+    return `<div class="rate-rows">${rows.map(row =>
+      `<div class="rate-row">${row.map(cardHtml).join('')}</div>`).join('')}</div>`;
   }
   function refreshRates(prof) {
     const el = document.getElementById('rate-cards');
@@ -532,8 +577,9 @@
 
   /* ---- 判別タブ ---- */
   function renderJudgeTab(exp, prof) {
+    const slump = `<div class="card judge-slump-card">${slumpSvg(state.active.history, prof.coinHold)}</div>`;
     if (!prof.metrics || !prof.metrics.length) {
-      return `<div class="muted small center" style="padding:24px 0">判別メトリックが未設定です。「機種」タブで追加できます。</div>`;
+      return `<div class="muted small center" style="padding:24px 0">判別メトリックが未設定です。「設定」タブの機種マスタで追加できます。</div>` + slump;
     }
     let body = '';
     if (exp.anyData && exp.posterior) {
@@ -566,7 +612,9 @@
         <div class="setting-chips">${chips}</div>
       </div>`;
     }).join('');
-    return `<div class="card" id="judge-card"><div id="judge-body">${body}</div>
+    return `<div class="card" id="judge-card">
+      <div id="judge-body">${body}</div>
+      <div class="judge-slump">${slumpSvg(state.active.history, prof.coinHold)}</div>
       <div style="margin-top:12px">${metricsHtml}</div></div>`;
   }
   function refreshJudge(prof) {
@@ -628,7 +676,6 @@
   function bindContentEvents(prof) {
     const s = state.active;
     // カウンター
-    const buzz = (ms) => { if (navigator.vibrate) { try { navigator.vibrate(ms); } catch (e) {} } };
     document.querySelectorAll('[data-inc]').forEach(el => {
       el.addEventListener('click', (e) => {
         if (e.target.closest('[data-dec]')) return;
@@ -639,7 +686,7 @@
         if (fracEl) fracEl.innerHTML = fmtCounterFrac(prof, k, s.counts[k]);
         // タップ演出：色が上→下へ流れる（アニメを毎回リスタート）＋ 端末をブルッと振動
         el.classList.remove('sweeping'); void el.offsetWidth; el.classList.add('sweeping');
-        buzz(18);
+        haptic();
         saveActive(); refreshHeaderBest(prof);
       });
     });
@@ -652,7 +699,7 @@
         card.querySelector('.cnt').textContent = s.counts[k];
         const fracEl = card.querySelector('.cnt-frac');
         if (fracEl) fracEl.innerHTML = fmtCounterFrac(prof, k, s.counts[k]);
-        buzz(12);
+        haptic();
         saveActive(); refreshHeaderBest(prof);
       });
     });
@@ -943,11 +990,14 @@
       <div class="card">
         <label class="field"><span>機種名</span>
           <input id="ed-machine" value="${esc(e.machine)}" placeholder="例 ヴヴヴ2 / 東京グール" /></label>
-        <label class="field" style="margin-bottom:0"><span>総Gのカウント方法</span>
+        <label class="field"><span>総Gのカウント方法</span>
           <select id="ed-totalg">
             <option value="manual" ${e.totalGMode !== 'auto' ? 'selected' : ''}>手動で入力</option>
             <option value="auto" ${e.totalGMode === 'auto' ? 'selected' : ''}>大当たり履歴のG数を合計して自動計算</option>
           </select></label>
+        <label class="field" style="margin-bottom:0"><span>通常時コイン持ち（1,000円＝50枚で回るG数）</span>
+          <input id="ed-coinhold" inputmode="decimal" value="${esc(e.coinHold != null ? e.coinHold : 50)}" placeholder="50" />
+          <div class="muted small" style="margin-top:4px">差枚グラフの傾き用（小数OK）。通常1Gあたりの減り＝50÷この値（例 50→1枚/G、31.8→約1.57枚/G）。公式スペックの「50枚あたりの平均G数(設定1)」を入れると正確です。</div></label>
       </div>
 
       ${accCard('pages', 'カウント画面（タブ）', e.pages.length, `
@@ -1018,6 +1068,7 @@
 
     document.getElementById('ed-machine').oninput = (ev) => e.machine = ev.target.value;
     document.getElementById('ed-totalg').onchange = (ev) => { e.totalGMode = ev.target.value; };
+    document.getElementById('ed-coinhold').oninput = (ev) => { const v = parseFloat(ev.target.value); e.coinHold = (isFinite(v) && v > 0) ? v : 50; };
 
     // pages
     // カウント画面（pages）＝ ポップアップで追加/編集
@@ -1720,7 +1771,7 @@
         ${w.history.length
           ? `<div class="hist-list" style="margin-top:8px">${w.history.map((h, i) => ({ h, i })).reverse().map(({ h, i }) => hitRowHtml(prof, h, `data-se-hit="${i}"`)).join('')}</div>`
           : '<div class="muted small" style="margin-top:6px">まだ登録がありません。</div>'}
-        <div class="card" style="margin-top:12px">${slumpSvg(w.history)}</div>`;
+        <div class="card" style="margin-top:12px">${slumpSvg(w.history, prof && prof.coinHold)}</div>`;
       else if (seTab === 'counts') sec = counters.length ? `
         <div class="se-sec-h">カウント</div>
         <div class="edit-grid">
