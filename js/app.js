@@ -24,8 +24,35 @@
   }
   function haptic() {
     try { if (navigator.vibrate) navigator.vibrate(15); } catch (e) {}
-    try { ensureHaptic().click(); } catch (e) {} // iOS純正ハプティック
+    try { ensureHaptic().click(); } catch (e) {} // iOS純正ハプティック（Safariタブ用・PWAでは効かないことが多い）
   }
+
+  /* ---------- タップ音（iOSのホーム画面PWAでも鳴る Web Audio） ---------- */
+  // iOSはバイブ非対応なので、代替の打感として短い「コッ」という音を鳴らす。
+  const tapSoundOn = () => localStorage.getItem('pc_tap_sound') !== '0'; // 既定ON
+  let _actx = null;
+  function playTap() {
+    if (!tapSoundOn()) return;
+    try {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return;
+      if (!_actx) _actx = new AC();
+      if (_actx.state === 'suspended') _actx.resume(); // iOSはユーザー操作内でresumeが必要
+      const t = _actx.currentTime;
+      const o = _actx.createOscillator();
+      const g = _actx.createGain();
+      o.type = 'triangle';
+      o.frequency.setValueAtTime(900, t);
+      o.frequency.exponentialRampToValueAtTime(430, t + 0.045);
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(0.22, t + 0.005);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.09);
+      o.connect(g); g.connect(_actx.destination);
+      o.start(t); o.stop(t + 0.1);
+    } catch (e) {}
+  }
+  // カウンタータップ時の手応え：バイブ（Android）＋タップ音（iOS含む全端末）
+  function tapFeedback() { haptic(); playTap(); }
 
   /* ---------- カラーパレット（カウンター／契機タグ用） ---------- */
   const PALETTE = [
@@ -686,7 +713,7 @@
         if (fracEl) fracEl.innerHTML = fmtCounterFrac(prof, k, s.counts[k]);
         // タップ演出：色が上→下へ流れる（アニメを毎回リスタート）＋ 端末をブルッと振動
         el.classList.remove('sweeping'); void el.offsetWidth; el.classList.add('sweeping');
-        haptic();
+        tapFeedback();
         saveActive(); refreshHeaderBest(prof);
       });
     });
@@ -699,7 +726,7 @@
         card.querySelector('.cnt').textContent = s.counts[k];
         const fracEl = card.querySelector('.cnt-frac');
         if (fracEl) fracEl.innerHTML = fmtCounterFrac(prof, k, s.counts[k]);
-        haptic();
+        tapFeedback();
         saveActive(); refreshHeaderBest(prof);
       });
     });
@@ -918,6 +945,14 @@
           <span class="sub">交換枚数（換金率）を登録・${state.stores.length}店舗</span></span>
         <span class="chev">›</span></button>
 
+      <div class="set-sec-h">操作</div>
+      <label class="set-menu" style="align-items:center;cursor:pointer">
+        <span class="ico">🔊</span>
+        <span class="body"><span class="t">タップ音</span>
+          <span class="sub">カウンターを押した時に「コッ」と音で手応え（iPhoneはバイブ非対応の代替）</span></span>
+        <input type="checkbox" id="tap-sound-toggle" ${tapSoundOn() ? 'checked' : ''} style="width:26px;height:26px;flex:none;accent-color:var(--accent)" />
+      </label>
+
       <div class="set-sec-h">アカウント</div>
       <div class="set-menu" style="align-items:center">
         <span class="ico">👤</span>
@@ -931,6 +966,11 @@
     document.querySelectorAll('[data-open]').forEach(el =>
       el.onclick = () => editProfile(state.profiles.find(p => p.id === el.getAttribute('data-open'))));
     document.getElementById('open-stores').onclick = openStoreMaster;
+    const tapToggle = document.getElementById('tap-sound-toggle');
+    if (tapToggle) tapToggle.onchange = (e) => {
+      localStorage.setItem('pc_tap_sound', e.target.checked ? '1' : '0');
+      if (e.target.checked) playTap(); // ONにした瞬間に試聴
+    };
     document.getElementById('logout-btn2').onclick = () => {
       if (!confirm('ログアウトしますか？（この端末のデータは残りますが、同期が止まります）')) return;
       Cloud.signOut(); renderLogin();
