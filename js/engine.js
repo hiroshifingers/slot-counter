@@ -10,6 +10,24 @@ const Engine = (() => {
   const SETTINGS = ['1', '2', '3', '4', '5', '6'];
   const clampP = (p) => Math.min(1 - 1e-9, Math.max(1e-9, p));
 
+  // 大当たり1件が field=val に該当するか。契機は複数選択対応（triggers/triggerGroups 配列）。
+  //   trigger      → h.triggers[]（旧: h.trigger 単一）
+  //   triggerGroup → h.triggerGroups[]（旧: h.triggerGroup 単一）
+  //   その他(type等) → 単一値の完全一致
+  function hitFieldMatch(h, field, val) {
+    if (!h) return false;
+    const v = String(val);
+    if (field === 'trigger') {
+      if (Array.isArray(h.triggers)) return h.triggers.some(x => String(x) === v);
+      return String(h.trigger != null ? h.trigger : '') === v;
+    }
+    if (field === 'triggerGroup') {
+      if (Array.isArray(h.triggerGroups)) return h.triggerGroups.some(x => String(x) === v);
+      return String(h.triggerGroup != null ? h.triggerGroup : '') === v;
+    }
+    return String(h[field] != null ? h[field] : '') === v;
+  }
+
   // counter:key / hit:field=値 / expr:式 を評価して「発生回数 k」を得る
   // 第2引数は session（counts と history の両方を参照する）
   function evalSource(source, session) {
@@ -31,7 +49,7 @@ const Engine = (() => {
       let n = 0;
       for (const h of hist) {
         if (!h) continue;
-        if (String(h[field] != null ? h[field] : '') === val) n++;
+        if (hitFieldMatch(h, field, val)) n++;
       }
       return n;
     }
@@ -81,7 +99,7 @@ const Engine = (() => {
   function countHits(session, field, val) {
     const hist = (session && session.history) || [];
     let n = 0;
-    for (const h of hist) { if (!h) continue; if (String(h[field] != null ? h[field] : '') === String(val)) n++; }
+    for (const h of hist) { if (!h) continue; if (hitFieldMatch(h, field, val)) n++; }
     return n;
   }
   // 判別メトリック参照 → その実測比率(k/N)。循環参照は null。

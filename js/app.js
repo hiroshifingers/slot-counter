@@ -153,6 +153,7 @@
     { value: 'zone',  label: 'ゾーン' },
     { value: 'rare',  label: 'レア役' },
     { value: 'state', label: '状態/特化' },
+    { value: 'mode',  label: 'モード' },
     { value: '',      label: 'その他' },
   ];
   const groupLabel = (g) => (TRIGGER_GROUPS.find(x => x.value === (g || '')) || { label: 'その他' }).label;
@@ -161,17 +162,26 @@
     const t = ((prof && prof.hit_triggers) || []).find(x => x.key === key);
     return t ? t.label : key;
   }
+  // 大当たり1件の契機キー配列。複数選択対応（triggers[]）＋旧単一(trigger)互換
+  function hitTriggerKeys(h) {
+    if (!h) return [];
+    if (Array.isArray(h.triggers)) return h.triggers;
+    return h.trigger ? [h.trigger] : [];
+  }
   // 大当たり履歴の1行（G数・種別・契機チップ・メモ・右端に時間）。実践タブと記録編集で共用
   function hitRowHtml(prof, h, dataAttr) {
-    const trg = triggerLabel(prof, h.trigger);
-    const trgClr = colorClass(triggerColor(prof, h.trigger));
+    const trgChips = hitTriggerKeys(h).map(k => {
+      const lbl = triggerLabel(prof, k);
+      if (!lbl) return '';
+      return `<span class="trg-chip${colorClass(triggerColor(prof, k))}">${esc(lbl)}</span>`;
+    }).join('');
     const memo = [h.extra, h.memo].filter(Boolean).join(' · ');
     const medals = Number(h.medals) || 0;
     return `<div class="hist-row" ${dataAttr}>
       <span class="g">${esc(h.g)}G</span>
       <span class="ty">${esc(h.type)}</span>
       ${medals ? `<span class="md">+${medals}枚</span>` : ''}
-      ${trg ? `<span class="trg-chip${trgClr}">${esc(trg)}</span>` : ''}
+      ${trgChips}
       ${memo ? `<span class="ex">${esc(memo)}</span>` : ''}
       ${h.savedAt ? `<span class="time">${esc(h.savedAt)}</span>` : ''}
     </div>`;
@@ -521,7 +531,8 @@
         const fracStr = fmtCounterFrac(prof, c.key, cnt);
         const fracHtml = fracStr ? `<div class="cnt-frac">${fracStr}</div>` : '';
         return `
-          <div class="counter${colorClass(c.color)}" data-inc="${esc(c.key)}">
+          <div class="counter${colorClass(c.color)}${c.image ? ' has-img' : ''}" data-inc="${esc(c.key)}">
+            ${c.image ? `<img class="cnt-img" src="${c.image}" alt="" />` : ''}
             <div class="lbl">${esc(c.label)}</div>
             <div class="cnt">${cnt}</div>
             ${fracHtml}
@@ -844,6 +855,7 @@
     const extras = prof.hit_extra_fields || [];
     const triggers = prof.hit_triggers || [];
     const cur = editing ? history[index] : { g: '', medals: '', type: types[0] || '', trigger: '', extra: '', memo: '' };
+    const curTriggers = hitTriggerKeys(cur); // 契機は複数選択
 
     openModal(`
       <h3>${editing ? '履歴を編集' : '大当たり履歴'}</h3>
@@ -860,14 +872,14 @@
         ${types.map(t => `<button class="type-btn ${t === cur.type ? 'sel' : ''}" data-type="${esc(t)}">${esc(t)}</button>`).join('')}
       </div>
       ${triggers.length ? `
-        <label class="field" style="margin-top:12px"><span>契機（液晶ゾーン・レア役・状態 / 1つ選択・もう一度タップで解除）</span></label>
+        <label class="field" style="margin-top:12px"><span>契機（液晶ゾーン・レア役・状態 / 複数選択可・もう一度タップで解除）</span></label>
         <div id="hit-triggers">
           ${TRIGGER_GROUPS.filter(g => triggers.some(t => (t.group || '') === g.value)).map(g => `
             <div class="trg-group">
               <div class="trg-glabel">${esc(g.label)}</div>
               <div class="type-grid">
                 ${triggers.filter(t => (t.group || '') === g.value).map(t =>
-                  `<button class="type-btn${colorClass(t.color)} ${t.key === cur.trigger ? 'sel' : ''}" data-trigger="${esc(t.key)}">${esc(t.label)}</button>`).join('')}
+                  `<button class="type-btn${colorClass(t.color)} ${curTriggers.includes(t.key) ? 'sel' : ''}" data-trigger="${esc(t.key)}">${esc(t.label)}</button>`).join('')}
               </div>
             </div>`).join('')}
         </div>` : ''}
@@ -889,11 +901,12 @@
         selType = b.getAttribute('data-type');
         root.querySelectorAll('[data-type]').forEach(x => x.classList.toggle('sel', x === b));
       });
-      let selTrigger = cur.trigger || '';
+      const selTriggers = curTriggers.slice(); // 複数選択（キー配列）
       root.querySelectorAll('[data-trigger]').forEach(b => b.onclick = () => {
         const k = b.getAttribute('data-trigger');
-        selTrigger = (selTrigger === k) ? '' : k; // もう一度タップで解除
-        root.querySelectorAll('[data-trigger]').forEach(x => x.classList.toggle('sel', x.getAttribute('data-trigger') === selTrigger));
+        const i = selTriggers.indexOf(k);
+        if (i >= 0) selTriggers.splice(i, 1); else selTriggers.push(k); // もう一度タップで解除
+        b.classList.toggle('sel', selTriggers.includes(k));
       });
       root.querySelector('#hit-save').onclick = async () => {
         const g = parseInt(gEl.value || '0', 10) || 0;
@@ -904,12 +917,19 @@
         root.querySelectorAll('[data-extra]').forEach(i => extraVals[i.getAttribute('data-extra')] = i.value);
         const extraStr = extras.map(f => extraVals[f.key] ? `${f.label}:${extraVals[f.key]}` : '').filter(Boolean).join(' ');
         const memo = (root.querySelector('#hit-memo') || {}).value || '';
-        const trig = triggers.find(t => t.key === selTrigger);
+        const selTrigObjs = selTriggers.map(k => triggers.find(t => t.key === k)).filter(Boolean);
+        const trigGroups = [...new Set(selTrigObjs.map(t => t.group || ''))];
         const now = new Date();
         // 編集時は元の記録時刻を保持（後から直しても打った時間がずれない）
         const savedAt = (editing && cur.savedAt) ? cur.savedAt
           : now.getHours().toString().padStart(2, '0') + ':' + now.getMinutes().toString().padStart(2, '0');
-        const rec = { g, medals, type: selType, trigger: selTrigger, triggerGroup: trig ? (trig.group || '') : '', extra: extraStr, extraVals, memo, savedAt };
+        const rec = {
+          g, medals, type: selType,
+          triggers: selTriggers.slice(), triggerGroups: trigGroups,
+          // 旧単一フィールド互換（PC側/旧コードが読む場合の先頭値）
+          trigger: selTriggers[0] || '', triggerGroup: trigGroups[0] || '',
+          extra: extraStr, extraVals, memo, savedAt
+        };
         if (editing) history[index] = rec; else history.push(rec);
         closeModal(); await onDone();
       };
@@ -994,6 +1014,7 @@
       const sub = (dt && dt.length) ? numPart + '母数: ' + formulaText(dt, e) : 'カウントのみ';
       return `<div class="ed-sort-row tap-row" data-editckey="${esc(c.key)}">
         <span class="drag-handle" title="ドラッグで並べ替え">⠿</span>
+        ${c.image ? `<img class="tr-thumb" src="${c.image}" alt="" />` : ''}
         <div class="tr-main"><div class="tr-name">${colorDot(c.color)}${esc(c.label) || '(無名)'}</div>
           <div class="tr-sub">${esc(sub)}</div></div>
         <button class="btn ghost small" data-delckey="${esc(c.key)}">✕</button>
@@ -1332,6 +1353,35 @@
   }
 
   /* ---------- カウンター：追加/編集モーダル ---------- */
+  // 画像をリサイズ＋圧縮して data URI 化。IndexedDB/クラウド同期(jsonb)に載る小サイズへ。
+  //   maxDim=長辺の最大px / quality=0..1。webp優先(iOS16.4+可)、非対応時は白背景でjpegにフォールバック。
+  function optimizeImage(file, maxDim = 160, quality = 0.72) {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => {
+        URL.revokeObjectURL(url);
+        const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+        const w = Math.max(1, Math.round(img.width * scale));
+        const h = Math.max(1, Math.round(img.height * scale));
+        const canvas = document.createElement('canvas');
+        canvas.width = w; canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, w, h);
+        let out = canvas.toDataURL('image/webp', quality);
+        if (!out.startsWith('data:image/webp')) {
+          // webp非対応 → 透過部分を白で塗ってからjpeg
+          ctx.globalCompositeOperation = 'destination-over';
+          ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, w, h);
+          out = canvas.toDataURL('image/jpeg', quality);
+        }
+        resolve(out);
+      };
+      img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('画像を読み込めませんでした')); };
+      img.src = url;
+    });
+  }
+
   function openCounterModal(idx, defaultPageId) {
     const e = state.editing;
     const isNew = idx < 0;
@@ -1346,6 +1396,16 @@
       <label class="field"><span>画面（タブ）</span>
         <select id="cm-page">${pageOpts}</select></label>
       <div class="field"><span>ボタンの色</span>${colorSwatchesHtml(w.color)}</div>
+      <div class="field"><span>ボタンの画像（任意）</span>
+        <div class="img-pick" id="cm-imgwrap">
+          ${w.image ? `<img class="img-preview" src="${w.image}" alt="" />` : '<div class="img-empty">画像なし</div>'}
+          <div class="img-actions">
+            <button type="button" class="btn small" id="cm-imgbtn">画像を選ぶ</button>
+            <button type="button" class="btn small danger" id="cm-imgclear" ${w.image ? '' : 'style="display:none"'}>削除</button>
+          </div>
+          <input type="file" id="cm-imgfile" accept="image/*" style="display:none" />
+        </div>
+        <div class="muted small" style="margin-top:4px">アップ時に自動で縮小・圧縮して保存します（長辺160px・webp/jpeg）</div></div>
       <div class="field"><span>分子＝計算式（任意）</span>
         ${fbtn(counterNumTokens(w) || [], e, 'data-cm-fnum', 0)}
         <div class="muted small" style="margin-top:4px">空のままならカウンターの値（タップ数）を分子に使います</div></div>
@@ -1364,6 +1424,26 @@
       </div>
     `, (root) => {
       bindSwatches(root, (v) => { if (v) w.color = v; else delete w.color; });
+      // 画像アップ（縮小・圧縮してから w.image に data URI 保存）
+      const imgWrap = root.querySelector('#cm-imgwrap');
+      const imgFile = root.querySelector('#cm-imgfile');
+      const imgBtn = root.querySelector('#cm-imgbtn');
+      const imgClear = root.querySelector('#cm-imgclear');
+      const refreshImg = () => {
+        const holder = imgWrap.querySelector('.img-preview, .img-empty');
+        holder.outerHTML = w.image ? `<img class="img-preview" src="${w.image}" alt="" />` : '<div class="img-empty">画像なし</div>';
+        imgClear.style.display = w.image ? '' : 'none';
+      };
+      imgBtn.onclick = () => imgFile.click();
+      imgFile.onchange = async () => {
+        const f = imgFile.files && imgFile.files[0];
+        if (!f) return;
+        imgBtn.disabled = true; const orig = imgBtn.textContent; imgBtn.textContent = '処理中…';
+        try { w.image = await optimizeImage(f); refreshImg(); }
+        catch (err) { toast((err && err.message) || '画像の処理に失敗しました'); }
+        finally { imgBtn.disabled = false; imgBtn.textContent = orig; imgFile.value = ''; }
+      };
+      imgClear.onclick = () => { delete w.image; refreshImg(); };
       root.querySelector('[data-cm-fnum]').onclick = () =>
         openFormulaBuilder('分子の計算式', counterNumTokens(w) || [], e, null, (toks) => {
           if (toks.length) w.numTokens = toks; else delete w.numTokens;
