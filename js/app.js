@@ -890,8 +890,9 @@
       <label class="field" style="margin-top:12px"><span>メモ</span>
         <input id="hit-memo" value="${esc(cur.memo || '')}" placeholder="台番・所感など" /></label>
       <div class="mfoot">
-        ${editing ? '<button class="btn danger" id="hit-del">削除</button>' : ''}
         <button class="btn primary" id="hit-save">保存</button>
+        <button class="btn ghost" data-close>キャンセル</button>
+        ${editing ? '<button class="btn danger" id="hit-del">削除</button>' : ''}
       </div>
     `, (root) => {
       const gEl = root.querySelector('#hit-g');
@@ -1836,12 +1837,15 @@
     if (!w.counts || typeof w.counts !== 'object') w.counts = {};
     const prof = state.profiles.find(p => p.id === w.profileId) || null;
 
+    const autoMode = !!(prof && prof.totalGMode === 'auto');
     // 履歴があれば当たり回数・累計Gは履歴から自動計算（手入力と食い違わないように）
     const hasHist = () => w.history.length > 0;
     const recalc = () => {
       if (hasHist()) {
         w.hits = w.history.length;
         w.cumG = w.history.reduce((a, h) => a + (Number(h.g) || 0), 0);
+        // auto機種は総G＝大当たり履歴のG数合計（実践画面と同じ算出＝率の分母を一致させる）
+        if (autoMode) w.total_spins = w.cumG;
       }
     };
     recalc();
@@ -1861,18 +1865,19 @@
           <input id="se-machine" value="${esc(w.machine || '')}" /></label>
         <div class="edit-grid">
           <label class="field" style="margin:0"><span>店舗</span>
-            <input id="se-store" value="${esc(w.store || '')}" placeholder="店名" /></label>
+            <select id="se-store">${storeOptionsHtml(w.store || '')}</select></label>
           <label class="field" style="margin:0"><span>台番</span>
             <input id="se-no" inputmode="numeric" value="${esc(w.machineNo || '')}" placeholder="台番号" /></label>
         </div>
         <label class="field"><span>日付</span>
           <input id="se-date" type="date" value="${esc(w.date)}" /></label>
         <div class="edit-grid">
-          <label class="field" style="margin:0"><span>総G</span>
-            <input id="se-total" inputmode="numeric" value="${w.total_spins || 0}" /></label>
+          <label class="field" style="margin:0"><span>総G${autoMode ? '（自動）' : ''}</span>
+            <input id="se-total" value="${w.total_spins || 0}" ${autoMode ? 'readonly class="auto-ro"' : 'inputmode="numeric"'} /></label>
           <label class="field" style="margin:0"><span>スタートG</span>
             <input id="se-start" inputmode="numeric" value="${w.start_spins || 0}" /></label>
         </div>
+        ${autoMode ? '<div class="muted small" style="margin:-4px 0 8px">総Gは大当たり履歴のG数合計から自動計算されます（実践画面と同じ）。</div>' : ''}
         <div class="edit-grid">
           <label class="field" style="margin:0"><span>投資金額（円）</span>
             <input id="se-invest" inputmode="numeric" value="${w.invest || 0}" /></label>
@@ -2117,9 +2122,14 @@
   }
   // 同じ日に複数店舗ある場合の選択モーダル
   function openDayChooser(ds, dayGroups) {
+    // カレンダーのセルはこの日の全店舗の合計。内訳が下の各店舗（合計＝カレンダー表示額）。
+    const dayTotal = dayGroups.reduce((a, g) => a + computeDay(g).profit, 0);
     openModal(`
       <h3>${esc(fmtDateJp(ds))} の収支</h3>
-      <div class="muted small" style="margin-bottom:8px">この日は複数の店舗の記録があります。開く方を選んでください。</div>
+      <div class="pl-result ${dayTotal >= 0 ? 'plus' : 'minus'}" style="margin-bottom:8px">
+        この日の合計 ${dayTotal >= 0 ? '+' : ''}${yen(dayTotal)}円
+      </div>
+      <div class="muted small" style="margin-bottom:8px">この日は複数店舗の記録があります（カレンダーの金額＝下の各店舗の合計）。開く店舗を選んでください。</div>
       <div>${dayGroups.map(g => {
         const c = computeDay(g);
         return `<div class="list-item tap-row" data-pickday="${g.id}">
