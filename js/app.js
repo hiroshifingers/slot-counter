@@ -1996,18 +1996,49 @@
   const sessDate = (s) => { if (s.date) return s.date; const d = new Date(s.startedAt); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
   // セッション1台の差枚（＝出玉 − 総回転×3枚）
   const sessionDiff = (s) => sessionMedals(s) - (Number(s.total_spins) || 0) * MEDALS_PER_G;
+  // セッション1台の回収金額（円）＝手入力回収があれば優先、無ければ 出玉×換金率
+  const sessionPayout = (s, rate) => (Number(s.payout) > 0) ? Number(s.payout)
+    : Math.round(sessionMedals(s) * (rate != null ? rate : storeRate(s.store)));
+  // セッション1台の収支（円）＝回収 − 投資
+  const sessionProfit = (s, rate) => sessionPayout(s, rate) - (Number(s.invest) || 0);
 
-  // (date, store) グループの表示値を算出（day記録があれば上書き、なければ自動）
+  // (date, store) グループの収支を算出。
+  //   収支合計 = 台実績（各台の収支合計・常にセッションから）＋ 直接入力（台に含まれない手入力の追加分）
+  //   ※旧overrideレコード（invest/payout）は「総額 − 台実績」を直接入力へ移行し、既存の日合計を保持する。
   function computeDay(g) {
     const rec = state.days.find(d => d.id === g.id) || null;
+    const rate = rec && Number(rec.rate) > 0 ? Number(rec.rate) : storeRate(g.store);
+    // 台実績
     const autoMedals = g.sessions.reduce((a, s) => a + sessionMedals(s), 0);
     const autoInvest = g.sessions.reduce((a, s) => a + (Number(s.invest) || 0), 0);
-    const rate = rec && Number(rec.rate) > 0 ? Number(rec.rate) : storeRate(g.store);
-    const payoutMedals = rec && rec.payoutMedals != null ? Number(rec.payoutMedals) : autoMedals;
-    const invest = rec && rec.invest != null ? Number(rec.invest) : autoInvest;
-    const payout = rec && rec.payout != null ? Number(rec.payout) : Math.round(payoutMedals * rate);
+    const autoPayout = g.sessions.reduce((a, s) => a + sessionPayout(s, rate), 0);
+    const realProfit = autoPayout - autoInvest;
+    // 直接入力（追加分）
+    let directInvest, directMedals, directPayout;
+    if (rec && (rec.directInvest != null || rec.directPayout != null || rec.directMedals != null)) {
+      directInvest = Number(rec.directInvest) || 0;         // 新形式
+      directMedals = Number(rec.directMedals) || 0;
+      directPayout = Number(rec.directPayout) || 0;
+    } else if (rec && (rec.invest != null || rec.payout != null || rec.payoutMedals != null)) {
+      // 旧overrideレコード → 追加分 = 総額 − 台実績（日合計を保持）
+      directInvest = Math.max(0, (Number(rec.invest) || 0) - autoInvest);
+      directMedals = Math.max(0, (rec.payoutMedals != null ? Number(rec.payoutMedals) : autoMedals) - autoMedals);
+      directPayout = Math.max(0, (Number(rec.payout) || 0) - autoPayout);
+    } else {
+      directInvest = 0; directMedals = 0; directPayout = 0;
+    }
+    const directProfit = directPayout - directInvest;
     const event = rec ? (rec.event || '') : '';
-    return { ...g, rec, autoMedals, autoInvest, rate, payoutMedals, invest, payout, event, profit: payout - invest };
+    return {
+      ...g, rec, rate,
+      autoMedals, autoInvest, autoPayout, realProfit,
+      directInvest, directMedals, directPayout, directProfit,
+      // 日合計（カレンダー/分析/選択画面の互換フィールド）
+      invest: autoInvest + directInvest,
+      payout: autoPayout + directPayout,
+      payoutMedals: autoMedals + directMedals,
+      event, profit: realProfit + directProfit,
+    };
   }
 
   // 収支データ: (date,store)ごとの group Map と computeDay 行、生セッションを返す
@@ -2219,20 +2250,32 @@
     });
   }
 
-  /* ---------- 収支の詳細・編集モーダル ---------- */
+  /* ---------- 収支の詳細・編集モーダル ----------
+     収支合計 = 台実績（各台の合計・自動）＋ 直接入力（台に含まれない手入力の追加分） */
   function openDayModal(group, opts) {
     const manual = !!(opts && opts.manual); // カレンダーの空き日から新規登録
     const c = computeDay(group);
     // 台の記録が紐づかない収支データ（新規 or 台を別店舗へ移した後の取り残し）は店舗を選び直せる
     const canEditStore = manual || group.sessions.length === 0;
-    // 作業コピー（保存を押すまで確定しない）
+    // 作業コピー（直接入力ぶんを編集。保存を押すまで確定しない）
     const w = {
-      id: c.id, date: c.date, store: c.store, event: c.event,
-      invest: c.invest, payoutMedals: c.payoutMedals, payout: c.payout, rate: c.rate,
+      id: c.id, date: c.date, store: c.store, event: c.event, rate: c.rate,
+      directInvest: c.directInvest, directMedals: c.directMedals, directPayout: c.directPayout,
     };
     const inMaster = () => !!findStore(w.store);
+    const pm = (n) => (n >= 0 ? '+' : '') + yen(n) + '円';
+    // 台実績（現在の換金率で再計算・店舗変更にも追従）
+    const real = () => {
+      const autoInvest = group.sessions.reduce((a, s) => a + (Number(s.invest) || 0), 0);
+      const autoPayout = group.sessions.reduce((a, s) => a + sessionPayout(s, w.rate), 0);
+      return { autoInvest, autoPayout, profit: autoPayout - autoInvest };
+    };
+    const directProfit = () => (Number(w.directPayout) || 0) - (Number(w.directInvest) || 0);
 
-    const body = () => `
+    const body = () => {
+      const r = real();
+      const total = r.profit + directProfit();
+      return `
       <h3>収支（${esc(w.date || '日付なし')}${w.store ? '・' + esc(w.store) : ''}）</h3>
       ${canEditStore
         ? `<label class="field"><span>店舗</span>
@@ -2242,33 +2285,42 @@
               : 'この収支データには台の記録が紐づいていません。店舗を選び直すと正しい店舗へ移せます（不要なら削除）。'}</div>`
         : '<div class="muted small" style="margin-bottom:8px">日付・店舗は各台の記録から自動で束ねています（変更は記録タブから）。</div>'}
 
+      ${group.sessions.length ? `
+      <div class="card pl-real">
+        <div class="pl-real-h">台実績（各台の合計・自動）</div>
+        <div class="pl-real-body">
+          <span>投資 ${yen(r.autoInvest)}円 ／ 回収 ${yen(r.autoPayout)}円</span>
+          <span class="pl-profit ${r.profit >= 0 ? 'plus' : 'minus'}">${pm(r.profit)}</span>
+        </div>
+      </div>` : ''}
+
+      <div class="se-sec-h" style="margin-top:12px">直接入力（台に含まれない分を手で追加）</div>
       <!-- 投資：台別（実践終了タブ）と同じ ＋1k / ＋1万 カウンター -->
       <div class="invest-row">
         <span class="ir-label">投資</span>
-        <input id="d-invest-k" inputmode="decimal" value="${w.invest ? w.invest / 1000 : ''}" placeholder="0" />
+        <input id="d-invest-k" inputmode="decimal" value="${w.directInvest ? w.directInvest / 1000 : ''}" placeholder="0" />
         <span class="ir-unit">k</span>
         <button class="btn" id="d-invest-plus">＋1k</button>
         <button class="btn" id="d-invest-plus-m">＋1万</button>
-        <span class="ir-yen" id="d-invest-yen">${yen(w.invest || 0)}円</span>
+        <span class="ir-yen" id="d-invest-yen">${yen(w.directInvest || 0)}円</span>
       </div>
-      <div class="muted small" style="margin:6px 0 8px">投資（自動）= 各台の投資合計 ${yen(c.autoInvest)}円。手で調整できます。</div>
-
       <!-- 回収：台別と同じ 回収枚数 → 計算 → 金額 -->
-      <div class="invest-row payout-row">
+      <div class="invest-row payout-row" style="margin-top:8px">
         <span class="ir-label">回収</span>
-        <input id="d-medals" inputmode="numeric" value="${w.payoutMedals || ''}" placeholder="0" />
+        <input id="d-medals" inputmode="numeric" value="${w.directMedals || ''}" placeholder="0" />
         <span class="ir-unit">枚</span>
         <button class="btn" id="d-calc">計算</button>
-        <input id="d-payout" inputmode="numeric" value="${w.payout || ''}" placeholder="0" />
+        <input id="d-payout" inputmode="numeric" value="${w.directPayout || ''}" placeholder="0" />
         <span class="ir-unit">円</span>
       </div>
-      <div class="muted small" style="margin:6px 0 8px">回収（自動）= 1日の出玉合計 ${yen(c.autoMedals)}枚。換金率 ${Math.round(w.rate * 100) / 100}円/枚${inMaster() ? '' : `（既定${DEFAULT_RATE}）`}。[計算]で 回収枚数 × 換金率 を回収金額に反映（手修正も可）。${inMaster() ? '' : '<br>この店舗は店舗マスタ未登録です。⚙店舗マスタ（設定タブ）で交換枚数を登録できます。'}</div>
+      <div class="muted small" style="margin:6px 0 8px">台で数えていない出玉・投資だけをここに追加します（台の分は上の「台実績」に自動集計）。換金率 ${Math.round(w.rate * 100) / 100}円/枚${inMaster() ? '' : `（既定${DEFAULT_RATE}）`}。[計算]で 回収枚数 × 換金率 を反映。${inMaster() ? '' : '<br>この店舗は店舗マスタ未登録です。⚙店舗マスタ（設定タブ）で交換枚数を登録できます。'}</div>
 
       <label class="field"><span>イベント</span>
         <input id="d-event" value="${esc(w.event || '')}" placeholder="旧イベ・7の日など" /></label>
 
-      <div class="pl-result ${(w.payout - w.invest) >= 0 ? 'plus' : 'minus'}" id="d-profit">
-        収支 ${(w.payout - w.invest) >= 0 ? '+' : ''}${yen(w.payout - w.invest)}円
+      <div class="pl-result ${total >= 0 ? 'plus' : 'minus'}" id="d-profit">
+        <div class="pl-total-big">収支合計 ${pm(total)}</div>
+        <div class="pl-total-break">直接入力 ${pm(directProfit())} ＋ 台実績 ${pm(r.profit)}</div>
       </div>
 
       <div class="se-sec">
@@ -2276,12 +2328,14 @@
         ${group.sessions.length ? `<div class="hist-list" style="margin-top:6px">${
           group.sessions.map(s => {
             const diff = sessionDiff(s);
-            return `<div class="hist-row tap-row" data-day-sess="${s.id}">
-              <span class="ty">${esc(s.machine || '機種')}</span>
+            const sp = sessionProfit(s, w.rate);
+            return `<div class="hist-row day-sess tap-row" data-day-sess="${s.id}">
               ${s.machineNo ? `<span class="trg-chip">台${esc(s.machineNo)}</span>` : ''}
+              <span class="ty">${esc(s.machine || '機種')}</span>
               <span class="g">${s.total_spins || 0}G</span>
               <span class="md">${sessionMedals(s)}枚</span>
               <span class="ex ${diff >= 0 ? 'plus' : 'minus'}">差枚 ${diff >= 0 ? '+' : ''}${diff}</span>
+              <span class="pl-profit ${sp >= 0 ? 'plus' : 'minus'}">${pm(sp)}</span>
             </div>`;
           }).join('')}</div>`
           : '<div class="muted small" style="margin-top:6px">この日の台記録はありません。</div>'}
@@ -2292,21 +2346,24 @@
         <button class="btn ghost" data-close>キャンセル</button>
         ${c.rec ? '<button class="btn danger" id="d-del">削除</button>' : ''}
       </div>`;
+    };
 
     const sync = (root) => {
       const v = (id) => (root.querySelector('#' + id) || {}).value;
       const stEl = root.querySelector('#d-store'); if (stEl) w.store = stEl.value;
       const ik = parseFloat(v('d-invest-k') || '0');
-      w.invest = Math.max(0, Math.round((isFinite(ik) ? ik : 0) * 1000));
+      w.directInvest = Math.max(0, Math.round((isFinite(ik) ? ik : 0) * 1000));
       w.event = v('d-event') || '';
-      w.payoutMedals = parseInt(v('d-medals') || '0', 10) || 0;
-      w.payout = parseInt(v('d-payout') || '0', 10) || 0;
+      w.directMedals = parseInt(v('d-medals') || '0', 10) || 0;
+      w.directPayout = parseInt(v('d-payout') || '0', 10) || 0;
     };
     const refreshProfit = (root) => {
       const el = root.querySelector('#d-profit');
-      const p = (w.payout || 0) - (w.invest || 0);
-      el.className = 'pl-result ' + (p >= 0 ? 'plus' : 'minus');
-      el.textContent = `収支 ${p >= 0 ? '+' : ''}${yen(p)}円`;
+      const r = real();
+      const total = r.profit + directProfit();
+      el.className = 'pl-result ' + (total >= 0 ? 'plus' : 'minus');
+      el.innerHTML = `<div class="pl-total-big">収支合計 ${pm(total)}</div>
+        <div class="pl-total-break">直接入力 ${pm(directProfit())} ＋ 台実績 ${pm(r.profit)}</div>`;
     };
 
     openModal(body(), function bind(root) {
@@ -2316,10 +2373,10 @@
       const st = root.querySelector('#d-store');
       if (st) st.onchange = () => { sync(root); w.store = st.value; w.rate = storeRate(w.store); rerender(); };
       // 投資カウンター（k入力＋＋1k/＋1万＝台別の投資行と同じ操作感）
-      const investYen = () => { const y = root.querySelector('#d-invest-yen'); if (y) y.textContent = yen(w.invest || 0) + '円'; };
+      const investYen = () => { const y = root.querySelector('#d-invest-yen'); if (y) y.textContent = yen(w.directInvest || 0) + '円'; };
       const bumpInvest = (amt) => {
-        w.invest = Math.max(0, (Number(w.invest) || 0) + amt);
-        const ik = root.querySelector('#d-invest-k'); if (ik) ik.value = w.invest / 1000;
+        w.directInvest = Math.max(0, (Number(w.directInvest) || 0) + amt);
+        const ik = root.querySelector('#d-invest-k'); if (ik) ik.value = w.directInvest / 1000;
         investYen(); refreshProfit(root);
       };
       const ip = root.querySelector('#d-invest-plus'); if (ip) ip.onclick = () => bumpInvest(1000);
@@ -2332,10 +2389,10 @@
       const ev = root.querySelector('#d-event'); if (ev) ev.oninput = () => { sync(root); };
       root.querySelector('#d-calc').onclick = () => {
         sync(root);
-        w.payout = Math.round((w.payoutMedals || 0) * w.rate);
-        const pe = root.querySelector('#d-payout'); if (pe) pe.value = w.payout;
+        w.directPayout = Math.round((w.directMedals || 0) * w.rate);
+        const pe = root.querySelector('#d-payout'); if (pe) pe.value = w.directPayout;
         refreshProfit(root);
-        toast(`${yen(w.payoutMedals)}枚 × ${w.rate}円 = ${yen(w.payout)}円`);
+        toast(`${yen(w.directMedals)}枚 × ${w.rate}円 = ${yen(w.directPayout)}円`);
       };
       root.querySelectorAll('[data-day-sess]').forEach(rowEl => rowEl.onclick = async () => {
         const s = (await DB.getSessions()).find(x => x.id === rowEl.getAttribute('data-day-sess'));
@@ -2343,26 +2400,44 @@
       });
       root.querySelector('#d-save').onclick = async () => {
         sync(root);
-        // 店舗を選べる収支データは「日付＋店舗」から決定的なIDを付け直す（店舗を変えても重複しない）
+        // 店舗を選べる収支データは「日付＋店舗」から決定的なIDを付け直す
         const recId = canEditStore ? dayId(w.date, w.store) : w.id;
-        // 店舗変更でIDが変わる既存レコードは、移動先に既存の収支があれば上書き確認、旧レコードは削除
-        if (canEditStore && c.rec && c.rec.id && c.rec.id !== recId) {
-          if (state.days.some(d => d.id === recId) &&
-              !confirm('移動先の店舗にはすでにこの日の収支データがあります。上書きしますか？')) return;
-          await DB.delDay(c.rec.id); addTombstone('pc_days', c.rec.id);
-        }
-        const rec = {
-          id: recId, date: w.date, store: w.store, event: w.event,
-          invest: w.invest, payoutMedals: w.payoutMedals, payout: w.payout, rate: w.rate,
-          createdAt: (c.rec && c.rec.createdAt) || Date.now(),
+        const moving = canEditStore && c.rec && c.rec.id && c.rec.id !== recId;
+        const finalize = async (dInv, dMed, dPay) => {
+          if (moving) { await DB.delDay(c.rec.id); addTombstone('pc_days', c.rec.id); }
+          const prev = state.days.find(d => d.id === recId);
+          const rec = {
+            id: recId, date: w.date, store: w.store, event: w.event, rate: w.rate,
+            directInvest: dInv, directMedals: dMed, directPayout: dPay,
+            createdAt: (prev && prev.createdAt) || (c.rec && c.rec.createdAt) || Date.now(),
+          };
+          await DB.putDay(rec);
+          await reload();
+          closeModal(); renderPL(); toast('収支を保存しました'); syncNow(false);
         };
-        await DB.putDay(rec);
-        await reload();
-        closeModal(); renderPL(); toast('収支を保存しました'); syncNow(false);
+        // 移動先に既存の直接入力データがある場合だけ「統合／上書き」を選ぶ
+        if (moving && state.days.some(d => d.id === recId)) {
+          const all = await DB.getSessions();
+          const tgtSess = all.filter(s => sessDate(s) === w.date && (s.store || '') === w.store);
+          const tc = computeDay({ id: recId, date: w.date, store: w.store, sessions: tgtSess });
+          openModal(`
+            <h3>移動先に収支データがあります</h3>
+            <div class="muted small" style="margin-bottom:6px">「${esc(w.store || '未設定')}」には既にこの日の直接入力の収支（${pm(tc.directPayout - tc.directInvest)}）があります。どうしますか？</div>
+            <div class="mfoot" style="flex-wrap:wrap;gap:8px">
+              <button class="btn primary" id="mm-merge">統合（足し合わせる）</button>
+              <button class="btn" id="mm-over">上書き（置き換える）</button>
+              <button class="btn ghost" data-close>キャンセル</button>
+            </div>`, (r2) => {
+            r2.querySelector('#mm-merge').onclick = () => { closeModal(); finalize((w.directInvest || 0) + tc.directInvest, (w.directMedals || 0) + tc.directMedals, (w.directPayout || 0) + tc.directPayout); };
+            r2.querySelector('#mm-over').onclick = () => { closeModal(); finalize(w.directInvest || 0, w.directMedals || 0, w.directPayout || 0); };
+          });
+          return;
+        }
+        finalize(w.directInvest || 0, w.directMedals || 0, w.directPayout || 0);
       };
       const del = root.querySelector('#d-del');
       if (del) del.onclick = async () => {
-        if (!confirm('この日の収支（投資・回収）を削除しますか？台の記録は残ります。')) return;
+        if (!confirm('この日の直接入力（手入力の投資・回収）を削除しますか？台の記録は残ります。')) return;
         await DB.delDay(w.id); addTombstone('pc_days', w.id); await reload();
         closeModal(); renderPL(); syncNow(false);
       };

@@ -469,6 +469,15 @@ input.auto-ro { color: var(--fg-dim); background: var(--bg2); border-style: dash
 }
 .pl-result.plus { color: var(--good); }
 .pl-result.minus { color: var(--bad); }
+/* 収支合計の内訳（直接入力＋台実績） */
+.pl-result .pl-total-big { font-size: 20px; }
+.pl-result .pl-total-break { margin-top: 4px; font-size: 12px; font-weight: 600; color: var(--fg-dim); }
+/* 台実績カード */
+.pl-real { margin-top: 10px; }
+.pl-real-h { font-size: 12px; font-weight: 700; color: var(--fg-dim); margin-bottom: 4px; }
+.pl-real-body { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; flex-wrap: wrap; font-size: 13px; }
+/* 台別成績の行：収支を右端に強調 */
+.hist-row.day-sess .pl-profit { margin-left: auto; padding-left: 8px; }
 .rate-disp {
   width: 100%; background: var(--bg2); color: var(--fg); border: 1px solid var(--line);
   border-radius: 9px; padding: 11px 12px; font-size: 16px; font-weight: 700;
