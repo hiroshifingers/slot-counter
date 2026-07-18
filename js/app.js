@@ -2091,12 +2091,11 @@
       <div class="cal-grid">${dowH}${cells}</div>
       <div class="muted small center" style="margin-top:12px">日付をタップすると、その日の投資・回収・台別成績を編集できます。</div>`;
   }
-  // 金額をセル内に収める短縮表記（±1.2k / ±34k）
+  // 金額をセル内に収める短縮表記。単位は常に「k」で統一（見間違い防止）。
+  //   388→0k / 1,500→2k / 12,345→12k / 123,456→123k（詳細な額はタップで確認）
   function plShort(n) {
-    const a = Math.abs(n);
-    if (a >= 10000) return Math.round(n / 1000) + 'k';
-    if (a >= 1000) return (Math.round(n / 100) / 10) + 'k';
-    return String(n);
+    const k = Math.round(n / 1000);
+    return (Object.is(k, -0) ? 0 : k) + 'k';
   }
   function shiftMonth(ym, delta) {
     let [y, m] = ym.split('-').map(Number);
