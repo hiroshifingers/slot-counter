@@ -2333,7 +2333,6 @@
               ${s.machineNo ? `<span class="trg-chip">台${esc(s.machineNo)}</span>` : ''}
               <span class="ty">${esc(s.machine || '機種')}</span>
               <span class="g">${s.total_spins || 0}G</span>
-              <span class="md">${sessionMedals(s)}枚</span>
               <span class="ex ${diff >= 0 ? 'plus' : 'minus'}">差枚 ${diff >= 0 ? '+' : ''}${diff}</span>
               <span class="pl-profit ${sp >= 0 ? 'plus' : 'minus'}">${pm(sp)}</span>
             </div>`;
