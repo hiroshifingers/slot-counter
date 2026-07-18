@@ -2223,6 +2223,8 @@
   function openDayModal(group, opts) {
     const manual = !!(opts && opts.manual); // カレンダーの空き日から新規登録
     const c = computeDay(group);
+    // 台の記録が紐づかない収支データ（新規 or 台を別店舗へ移した後の取り残し）は店舗を選び直せる
+    const canEditStore = manual || group.sessions.length === 0;
     // 作業コピー（保存を押すまで確定しない）
     const w = {
       id: c.id, date: c.date, store: c.store, event: c.event,
@@ -2232,35 +2234,38 @@
 
     const body = () => `
       <h3>収支（${esc(w.date || '日付なし')}${w.store ? '・' + esc(w.store) : ''}）</h3>
-      ${manual
+      ${canEditStore
         ? `<label class="field"><span>店舗</span>
              <select id="d-store">${storeOptionsHtml(w.store || '')}</select></label>
-           <div class="muted small" style="margin-bottom:8px">${w.date ? esc(fmtDateJp(w.date)) : ''} の収支を新規登録します。</div>`
+           <div class="muted small" style="margin-bottom:8px">${manual
+              ? (w.date ? esc(fmtDateJp(w.date)) : '') + ' の収支を新規登録します。'
+              : 'この収支データには台の記録が紐づいていません。店舗を選び直すと正しい店舗へ移せます（不要なら削除）。'}</div>`
         : '<div class="muted small" style="margin-bottom:8px">日付・店舗は各台の記録から自動で束ねています（変更は記録タブから）。</div>'}
 
-      <div class="edit-grid">
-        <label class="field" style="margin:0"><span>投資金額（円）</span>
-          <input id="d-invest" inputmode="numeric" value="${w.invest || ''}" placeholder="0" /></label>
-        <label class="field" style="margin:0"><span>イベント</span>
-          <input id="d-event" value="${esc(w.event || '')}" placeholder="旧イベ・7の日など" /></label>
+      <!-- 投資：台別（実践終了タブ）と同じ ＋1k / ＋1万 カウンター -->
+      <div class="invest-row">
+        <span class="ir-label">投資</span>
+        <input id="d-invest-k" inputmode="decimal" value="${w.invest ? w.invest / 1000 : ''}" placeholder="0" />
+        <span class="ir-unit">k</span>
+        <button class="btn" id="d-invest-plus">＋1k</button>
+        <button class="btn" id="d-invest-plus-m">＋1万</button>
+        <span class="ir-yen" id="d-invest-yen">${yen(w.invest || 0)}円</span>
       </div>
-      <div class="muted small" style="margin:-4px 0 8px">投資（自動）= 各台の投資合計 ${yen(c.autoInvest)}円。手で調整できます。</div>
+      <div class="muted small" style="margin:6px 0 8px">投資（自動）= 各台の投資合計 ${yen(c.autoInvest)}円。手で調整できます。</div>
 
-      <div class="card" style="margin-top:10px">
-        <div class="se-sec-h">出玉から回収を計算</div>
-        <div class="muted small">1日の出玉（自動）= ${yen(c.autoMedals)}枚。手で調整できます。</div>
-        <div class="edit-grid" style="margin-top:6px">
-          <label class="field" style="margin:0"><span>出玉（枚）</span>
-            <input id="d-medals" inputmode="numeric" value="${w.payoutMedals || ''}" placeholder="0" /></label>
-          <div class="field" style="margin:0"><span>換金率</span>
-            <div class="rate-disp">${Math.round(w.rate * 100) / 100}円/枚 ${inMaster() ? '' : '<span class="muted small">(既定)</span>'}</div></div>
-        </div>
-        <button class="btn small block" id="d-calc" style="margin-top:8px">🖩 出玉 × 換金率 で回収を計算</button>
-        ${inMaster() ? '' : `<div class="muted small" style="margin-top:6px">この店舗は店舗マスタ未登録です（換金率${DEFAULT_RATE}円/枚で計算）。⚙店舗マスタ（設定タブ）で登録できます。</div>`}
+      <!-- 回収：台別と同じ 回収枚数 → 計算 → 金額 -->
+      <div class="invest-row payout-row">
+        <span class="ir-label">回収</span>
+        <input id="d-medals" inputmode="numeric" value="${w.payoutMedals || ''}" placeholder="0" />
+        <span class="ir-unit">枚</span>
+        <button class="btn" id="d-calc">計算</button>
+        <input id="d-payout" inputmode="numeric" value="${w.payout || ''}" placeholder="0" />
+        <span class="ir-unit">円</span>
       </div>
+      <div class="muted small" style="margin:6px 0 8px">回収（自動）= 1日の出玉合計 ${yen(c.autoMedals)}枚。換金率 ${Math.round(w.rate * 100) / 100}円/枚${inMaster() ? '' : `（既定${DEFAULT_RATE}）`}。[計算]で 回収枚数 × 換金率 を回収金額に反映（手修正も可）。${inMaster() ? '' : '<br>この店舗は店舗マスタ未登録です。⚙店舗マスタ（設定タブ）で交換枚数を登録できます。'}</div>
 
-      <label class="field" style="margin-top:10px"><span>回収金額（円・編集可）</span>
-        <input id="d-payout" inputmode="numeric" value="${w.payout || ''}" placeholder="0" style="font-size:20px;font-weight:800" /></label>
+      <label class="field"><span>イベント</span>
+        <input id="d-event" value="${esc(w.event || '')}" placeholder="旧イベ・7の日など" /></label>
 
       <div class="pl-result ${(w.payout - w.invest) >= 0 ? 'plus' : 'minus'}" id="d-profit">
         収支 ${(w.payout - w.invest) >= 0 ? '+' : ''}${yen(w.payout - w.invest)}円
@@ -2291,7 +2296,8 @@
     const sync = (root) => {
       const v = (id) => (root.querySelector('#' + id) || {}).value;
       const stEl = root.querySelector('#d-store'); if (stEl) w.store = stEl.value;
-      w.invest = parseInt(v('d-invest') || '0', 10) || 0;
+      const ik = parseFloat(v('d-invest-k') || '0');
+      w.invest = Math.max(0, Math.round((isFinite(ik) ? ik : 0) * 1000));
       w.event = v('d-event') || '';
       w.payoutMedals = parseInt(v('d-medals') || '0', 10) || 0;
       w.payout = parseInt(v('d-payout') || '0', 10) || 0;
@@ -2306,10 +2312,20 @@
     openModal(body(), function bind(root) {
       const modal = root.querySelector('.modal');
       const rerender = () => { modal.innerHTML = body(); bind(root); };
-      // 新規登録時：店舗を選ぶと換金率も切り替わる
+      // 店舗を選ぶと換金率も切り替わる（新規／台なし収支データ）
       const st = root.querySelector('#d-store');
       if (st) st.onchange = () => { sync(root); w.store = st.value; w.rate = storeRate(w.store); rerender(); };
-      ['d-invest', 'd-payout', 'd-medals'].forEach(id => {
+      // 投資カウンター（k入力＋＋1k/＋1万＝台別の投資行と同じ操作感）
+      const investYen = () => { const y = root.querySelector('#d-invest-yen'); if (y) y.textContent = yen(w.invest || 0) + '円'; };
+      const bumpInvest = (amt) => {
+        w.invest = Math.max(0, (Number(w.invest) || 0) + amt);
+        const ik = root.querySelector('#d-invest-k'); if (ik) ik.value = w.invest / 1000;
+        investYen(); refreshProfit(root);
+      };
+      const ip = root.querySelector('#d-invest-plus'); if (ip) ip.onclick = () => bumpInvest(1000);
+      const ipm = root.querySelector('#d-invest-plus-m'); if (ipm) ipm.onclick = () => bumpInvest(10000);
+      const ikEl = root.querySelector('#d-invest-k'); if (ikEl) ikEl.oninput = () => { sync(root); investYen(); refreshProfit(root); };
+      ['d-payout', 'd-medals'].forEach(id => {
         const el = root.querySelector('#' + id);
         if (el) el.oninput = () => { sync(root); refreshProfit(root); };
       });
@@ -2327,8 +2343,14 @@
       });
       root.querySelector('#d-save').onclick = async () => {
         sync(root);
-        // 新規登録は「日付＋店舗」から決定的なIDを付け直す（店舗を選び直しても重複しない）
-        const recId = manual ? dayId(w.date, w.store) : w.id;
+        // 店舗を選べる収支データは「日付＋店舗」から決定的なIDを付け直す（店舗を変えても重複しない）
+        const recId = canEditStore ? dayId(w.date, w.store) : w.id;
+        // 店舗変更でIDが変わる既存レコードは、移動先に既存の収支があれば上書き確認、旧レコードは削除
+        if (canEditStore && c.rec && c.rec.id && c.rec.id !== recId) {
+          if (state.days.some(d => d.id === recId) &&
+              !confirm('移動先の店舗にはすでにこの日の収支データがあります。上書きしますか？')) return;
+          await DB.delDay(c.rec.id); addTombstone('pc_days', c.rec.id);
+        }
         const rec = {
           id: recId, date: w.date, store: w.store, event: w.event,
           invest: w.invest, payoutMedals: w.payoutMedals, payout: w.payout, rate: w.rate,
