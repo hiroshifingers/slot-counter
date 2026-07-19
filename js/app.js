@@ -948,7 +948,11 @@
       <div class="screen-head"><h1>設定</h1></div>
 
       <div class="set-sec-h">機種マスタ
-        <button class="btn primary small add" id="new-prof">＋ 新規</button></div>
+        <span style="display:flex;gap:6px">
+          ${isOwner() ? `<button class="btn small" id="import-prof">📥 取り込み</button>` : ''}
+          <button class="btn primary small add" id="new-prof">＋ 新規</button>
+        </span></div>
+      ${isOwner() ? `<input type="file" id="import-prof-file" accept="application/json,.json" style="display:none" />` : ''}
       ${state.profiles.length ? state.profiles.map(p => `
         <div class="list-item tap-row" data-open="${p.id}">
           <span class="ti">🎰</span>
@@ -984,6 +988,18 @@
     `;
     const nb = document.getElementById('new-prof'); if (nb) nb.onclick = () => editProfile(null);
     const nb2 = document.getElementById('new-prof2'); if (nb2) nb2.onclick = () => editProfile(null);
+    const impBtn = document.getElementById('import-prof');
+    const impFile = document.getElementById('import-prof-file');
+    if (impBtn && impFile) {
+      impBtn.onclick = () => impFile.click();
+      impFile.onchange = () => {
+        const f = impFile.files && impFile.files[0];
+        if (!f) return;
+        const reader = new FileReader();
+        reader.onload = () => { importProfileFromJson(String(reader.result || '')); impFile.value = ''; };
+        reader.readAsText(f);
+      };
+    }
     document.querySelectorAll('[data-open]').forEach(el =>
       el.onclick = () => editProfile(state.profiles.find(p => p.id === el.getAttribute('data-open'))));
     document.getElementById('open-stores').onclick = openStoreMaster;
@@ -996,6 +1012,42 @@
       if (!confirm('ログアウトしますか？（この端末のデータは残りますが、同期が止まります）')) return;
       Cloud.signOut(); renderLogin();
     };
+  }
+
+  // 汎用: プロファイルJSONを取り込む（外部で作った設定別テーブル入りプロファイル等・個人利用）
+  async function importProfileFromJson(text) {
+    let data;
+    try { data = JSON.parse(text); } catch (e) { toast('JSONの読み込みに失敗しました'); return; }
+    if (!data || typeof data !== 'object' || (!data.machine && !Array.isArray(data.metrics))) {
+      toast('プロファイル形式ではありません'); return;
+    }
+    const metrics = (Array.isArray(data.metrics) ? data.metrics : []).map((m, i) => ({
+      key: m.key || uid('m'),
+      label: String(m.label || ('指標' + (i + 1))),
+      source: typeof m.source === 'string' ? m.source : '',
+      denominator: typeof m.denominator === 'string' ? m.denominator : 'total_spins',
+      sourceTokens: m.sourceTokens, denomTokens: m.denomTokens,
+      mode: m.mode === 'percent' ? 'percent' : 'fraction',
+      include: m.include !== false,
+      settings: (m.settings && typeof m.settings === 'object') ? m.settings : {},
+    }));
+    const prof = ensurePages({
+      id: uid('p'),
+      machine: String(data.machine || '取り込み機種'),
+      totalGMode: data.totalGMode === 'auto' ? 'auto' : 'manual',
+      bonus_types: (Array.isArray(data.bonus_types) && data.bonus_types.length) ? data.bonus_types.map(String) : ['BB', 'RB'],
+      hit_triggers: Array.isArray(data.hit_triggers) ? data.hit_triggers : [],
+      hit_extra_fields: Array.isArray(data.hit_extra_fields) ? data.hit_extra_fields : [],
+      counters: Array.isArray(data.counters) ? data.counters : [],
+      metrics,
+      createdAt: Date.now(),
+    });
+    if (Array.isArray(data.pages) && data.pages.length) prof.pages = data.pages;
+    await DB.putProfile(prof);
+    await reload();
+    render();
+    toast('「' + prof.machine + '」を取り込みました');
+    syncNow(false);
   }
 
   function editProfile(profile) {
@@ -2582,7 +2634,15 @@
   }
 
   /* ---------- 起動 ---------- */
+  // オーナー限定機能（設定別データの取り込み等）の判定。?owner=1 で自分の端末だけ有効化・?owner=0 で解除。
+  function isOwner() { try { return localStorage.getItem('pc_owner') === '1'; } catch (e) { return false; } }
+
   (async function init() {
+    try {
+      const sp = new URLSearchParams(location.search);
+      if (sp.get('owner') === '1') localStorage.setItem('pc_owner', '1');
+      else if (sp.get('owner') === '0') localStorage.removeItem('pc_owner');
+    } catch (e) {}
     // オンライン復帰時・前面復帰時に自動で同期（失敗は無視）
     window.addEventListener('online', () => syncNow(false).then(refreshIfChanged));
     document.addEventListener('visibilitychange', () => {
