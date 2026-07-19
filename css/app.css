@@ -96,6 +96,11 @@ input[type="date"] { -webkit-appearance: none; appearance: none; min-width: 0; }
   box-shadow: 0 1px 0 rgba(255,255,255,.03) inset, 0 3px 10px rgba(0,0,0,.28);
   transition: transform .08s ease, box-shadow .12s, background .12s;
 }
+/* ボタン内のコンテンツ（画像/ラベル/数字/確率）は中央寄せで空きを均等に埋める */
+.counter .cnt-main {
+  flex: 1; align-self: stretch;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+}
 .counter.has-color { border-top-color: var(--c); }
 /* タップ時に色が上から下へスラッと流れるスウィープ演出（drop-shadowを消さないよう overflow:hidden は使わず背景位置で表現） */
 .counter::after {
@@ -108,15 +113,21 @@ input[type="date"] { -webkit-appearance: none; appearance: none; min-width: 0; }
   0%   { opacity: .9; background-position: 50% 0%; }
   100% { opacity: 0; background-position: 50% 100%; }
 }
+/* 画像あり: 画像を主役に大きく表示（視認性優先） */
 .counter .cnt-img {
-  width: 44px; height: 44px; object-fit: contain; border-radius: 8px;
+  width: 84px; height: 84px; object-fit: contain; border-radius: 10px;
   margin-bottom: 2px; pointer-events: none;
 }
 .counter .lbl {
   font-size: 13px; color: var(--fg-dim); min-height: 18px;
   align-self: stretch; text-align: center; line-height: 1.3;
 }
-.counter.has-img .cnt { font-size: 32px; }
+/* 画像あり: 画像が主役なのでラベルは控えめ・数字はコンパクトに */
+.counter.has-img .lbl { font-size: 12px; min-height: 0; }
+.counter.has-img .cnt { font-size: 30px; }
+/* 画像なし: 画像スペースを空けず、ラベル＋数字を大きくしてボタンを埋める */
+.counter:not(.has-img) .lbl { font-size: 15px; font-weight: 600; color: var(--fg); }
+.counter:not(.has-img) .cnt { font-size: 50px; }
 /* カウンター編集: 画像ピッカー */
 .img-pick { display: flex; align-items: center; gap: 12px; }
 .img-pick .img-preview { width: 64px; height: 64px; object-fit: contain; border-radius: 10px; background: var(--bg); border: 1px solid var(--line); flex: none; }
