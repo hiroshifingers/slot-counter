@@ -2584,7 +2584,12 @@
   }
 
   document.querySelectorAll('#tabbar .tab').forEach(t =>
-    t.onclick = () => { state.editing = null; state.tab = t.getAttribute('data-tab'); render(); });
+    t.onclick = () => {
+      const tab = t.getAttribute('data-tab');
+      state.editing = null; state.tab = tab; render();
+      // 隠し操作: 下の「設定」タブを5回すばやく連打でもオーナーON/OFF
+      if (tab === 'profiles') ownerSecretTap();
+    });
 
   /* ---------- ログイン画面（初回のみ） ---------- */
   function renderLogin() {
