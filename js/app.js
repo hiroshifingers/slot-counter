@@ -532,14 +532,12 @@
         const fracHtml = fracStr ? `<div class="cnt-frac">${fracStr}</div>` : '';
         return `
           <div class="counter${colorClass(c.color)}${c.image ? ' has-img' : ''}" data-inc="${esc(c.key)}">
+            <button class="dec" data-dec="${esc(c.key)}">−</button>
             <div class="cnt-main">
               ${c.image ? `<img class="cnt-img" src="${c.image}" alt="" />` : ''}
               <div class="lbl">${esc(c.label)}</div>
               <div class="cnt">${cnt}</div>
               ${fracHtml}
-            </div>
-            <div class="cnt-bottom">
-              <button class="dec" data-dec="${esc(c.key)}">−</button>
             </div>
           </div>`;
       }).join('')}

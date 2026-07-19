@@ -90,16 +90,19 @@ input[type="date"] { -webkit-appearance: none; appearance: none; min-width: 0; }
   position: relative;
   background: linear-gradient(180deg, var(--bg3), var(--bg2));
   border: 1px solid var(--line); border-top: 3px solid var(--line);
-  border-radius: 16px; padding: 12px 12px 8px; user-select: none;
+  border-radius: 16px; padding: 8px 10px 8px; user-select: none;
   display: flex; flex-direction: column; align-items: center; gap: 1px;
-  min-height: 118px;
   box-shadow: 0 1px 0 rgba(255,255,255,.03) inset, 0 3px 10px rgba(0,0,0,.28);
   transition: transform .08s ease, box-shadow .12s, background .12s;
 }
-/* ボタン内のコンテンツ（画像/ラベル/数字/確率）は中央寄せで空きを均等に埋める */
+/* ボタン内のコンテンツ（画像/ラベル/数字/確率）のレイアウト */
 .counter .cnt-main {
-  flex: 1; align-self: stretch;
-  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+  align-self: stretch;
+  display: flex; flex-direction: column; align-items: center; gap: 1px;
+}
+/* 画像なし: 数字を上・ラベルを下にして −ボタンから離す＋縦中央寄せで詰める */
+.counter:not(.has-img) .cnt-main {
+  flex: 1; justify-content: center; gap: 2px;
 }
 .counter.has-color { border-top-color: var(--c); }
 /* タップ時に色が上から下へスラッと流れるスウィープ演出（drop-shadowを消さないよう overflow:hidden は使わず背景位置で表現） */
@@ -115,8 +118,8 @@ input[type="date"] { -webkit-appearance: none; appearance: none; min-width: 0; }
 }
 /* 画像あり: 画像を主役に大きく表示（視認性優先） */
 .counter .cnt-img {
-  width: 84px; height: 84px; object-fit: contain; border-radius: 10px;
-  margin-bottom: 2px; pointer-events: none;
+  width: 58px; height: 58px; object-fit: contain; border-radius: 10px;
+  margin-bottom: 1px; pointer-events: none;
 }
 .counter .lbl {
   font-size: 13px; color: var(--fg-dim); min-height: 18px;
@@ -124,10 +127,11 @@ input[type="date"] { -webkit-appearance: none; appearance: none; min-width: 0; }
 }
 /* 画像あり: 画像が主役なのでラベルは控えめ・数字はコンパクトに */
 .counter.has-img .lbl { font-size: 12px; min-height: 0; }
-.counter.has-img .cnt { font-size: 30px; }
-/* 画像なし: 画像スペースを空けず、ラベル＋数字を大きくしてボタンを埋める */
-.counter:not(.has-img) .lbl { font-size: 15px; font-weight: 600; color: var(--fg); }
-.counter:not(.has-img) .cnt { font-size: 50px; }
+.counter.has-img .cnt { font-size: 28px; }
+/* 画像なし: 数字を上・ラベルを下に並べ替え（＝テキストを下げて −ボタンから離す） */
+.counter:not(.has-img) .cnt { order: 1; font-size: 44px; }
+.counter:not(.has-img) .lbl { order: 2; font-size: 15px; font-weight: 600; color: var(--fg); min-height: 0; }
+.counter:not(.has-img) .cnt-frac { order: 3; }
 /* カウンター編集: 画像ピッカー */
 .img-pick { display: flex; align-items: center; gap: 12px; }
 .img-pick .img-preview { width: 64px; height: 64px; object-fit: contain; border-radius: 10px; background: var(--bg); border: 1px solid var(--line); flex: none; }
@@ -146,11 +150,12 @@ input[type="date"] { -webkit-appearance: none; appearance: none; min-width: 0; }
   background: color-mix(in srgb, var(--c) 20%, var(--bg3));
   box-shadow: 0 0 0 2px var(--c) inset, 0 3px 10px rgba(0,0,0,.28);
 }
-.counter .cnt-bottom { display: flex; align-self: stretch; margin-top: auto; padding-top: 6px; }
+/* −ボタンは左上に固定配置（下段の余白をなくしてボタンをコンパクトに） */
 .counter .dec {
-  width: 34px; height: 34px; border-radius: 10px;
+  position: absolute; top: 6px; left: 6px; z-index: 2;
+  width: 28px; height: 28px; border-radius: 8px;
   background: var(--bg); border: 1px solid var(--line); color: var(--fg-dim);
-  font-size: 19px; display: flex; align-items: center; justify-content: center;
+  font-size: 17px; display: flex; align-items: center; justify-content: center;
 }
 .counter .dec:active { border-color: var(--c); color: var(--c); }
 
