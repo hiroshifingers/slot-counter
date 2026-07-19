@@ -986,6 +986,7 @@
       </div>
       <div class="muted small" style="margin:8px 2px 0">クラウド同期はネット接続時に自動で行われます（記録タブの🔄で手動同期も可）。</div>
     `;
+    const secretHead = $app.querySelector('.screen-head h1'); if (secretHead) secretHead.onclick = ownerSecretTap;
     const nb = document.getElementById('new-prof'); if (nb) nb.onclick = () => editProfile(null);
     const nb2 = document.getElementById('new-prof2'); if (nb2) nb2.onclick = () => editProfile(null);
     const impBtn = document.getElementById('import-prof');
@@ -2636,6 +2637,20 @@
   /* ---------- 起動 ---------- */
   // オーナー限定機能（設定別データの取り込み等）の判定。?owner=1 で自分の端末だけ有効化・?owner=0 で解除。
   function isOwner() { try { return localStorage.getItem('pc_owner') === '1'; } catch (e) { return false; } }
+  // 隠し操作: 「設定」見出しを5回すばやくタップ→オーナーON/OFF（ホーム画面アプリ内でも切替可）。
+  let _ownerTap = { n: 0, t: 0 };
+  function ownerSecretTap() {
+    const now = Date.now();
+    if (now - _ownerTap.t > 1500) _ownerTap.n = 0;
+    _ownerTap.t = now; _ownerTap.n++;
+    if (_ownerTap.n >= 5) {
+      _ownerTap.n = 0;
+      const on = !isOwner();
+      try { if (on) localStorage.setItem('pc_owner', '1'); else localStorage.removeItem('pc_owner'); } catch (e) {}
+      toast(on ? 'オーナーモードON（取り込みを表示）' : 'オーナーモードOFF');
+      render();
+    }
+  }
 
   (async function init() {
     try {
